@@ -1,4 +1,4 @@
-# app.py
+# app.py (UPDATED)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,9 +6,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 from streamlit_option_menu import option_menu
 from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.metrics import accuracy_score, classification_report, mean_squared_error, r2_score, confusion_matrix, mean_absolute_error
+from sklearn.inspection import permutation_importance
+from sklearn.cluster import KMeans
 from io import BytesIO
 import joblib
 import time
@@ -25,6 +27,7 @@ st.set_page_config(
 )
 
 # ----------------- THEMES -----------------
+# (unchanged, same as your original themes)
 theme_classification = {
     "background_main": "linear-gradient(120deg, #0f2c2c 0%, #1a4141 40%, #0e2a2a 100%)",
     "sidebar_bg": "rgba(15, 30, 30, 0.95)",
@@ -234,9 +237,11 @@ column_mapping = {
     'Phosphorus': ['Phosphorus', 'P'],
     'Potassium': ['Potassium', 'K'],
     'Moisture': ['Moisture', 'Soil_Moisture'],
-    'Organic Matter': ['Organic Matter', 'OM', 'oc']
+    'Organic Matter': ['Organic Matter', 'OM', 'oc'],
+    'Latitude': ['Latitude', 'Lat', 'lat'],
+    'Longitude': ['Longitude', 'Lon', 'Lng', 'lon', 'lng']
 }
-required_columns = list(column_mapping.keys())
+required_columns = ['pH', 'Nitrogen', 'Phosphorus', 'Potassium', 'Moisture', 'Organic Matter']
 
 def safe_to_numeric_columns(df, cols):
     numeric_found = []
@@ -270,7 +275,127 @@ def interpret_label(label):
         return ("Moderate", "orange", "⚠️ Some nutrient imbalance. Consider minor adjustments.")
     return ("Poor", "red", "🚫 Deficient or problematic — take corrective action.")
 
-# ----------------- PROFILE / AVATAR HELPERS -----------------
+# ----------------- NEW: Crop profiles and matching -----------------
+# Add or expand this dictionary based on domain needs. Values: ideal ranges (min, max)
+CROP_PROFILES = {
+    "Rice": {"pH": (5.5, 6.5), "Nitrogen": (0.25, 0.8), "Phosphorus": (15, 40), "Potassium": (80, 200), "Moisture": (40, 80), "Organic Matter": (2.0, 6.0)},
+    "Corn (Maize)": {"pH": (5.8, 7.0), "Nitrogen": (0.3, 1.2), "Phosphorus": (10, 40), "Potassium": (100, 250), "Moisture": (20, 60), "Organic Matter": (1.5, 4.0)},
+    "Cassava": {"pH": (5.0, 7.0), "Nitrogen": (0.1, 0.5), "Phosphorus": (5, 25), "Potassium": (100, 300), "Moisture": (20, 60), "Organic Matter": (1.0, 3.5)},
+    "Vegetables (general)": {"pH": (6.0, 7.5), "Nitrogen": (0.3, 1.5), "Phosphorus": (15, 50), "Potassium": (120, 300), "Moisture": (30, 70), "Organic Matter": (2.0, 5.0)},
+    "Banana": {"pH": (5.5, 7.0), "Nitrogen": (0.2, 0.8), "Phosphorus": (10, 30), "Potassium": (200, 500), "Moisture": (40, 80), "Organic Matter": (2.0, 6.0)},
+    "Coconut": {"pH": (5.5, 7.5), "Nitrogen": (0.1, 0.6), "Phosphorus": (5, 25), "Potassium": (80, 250), "Moisture": (30, 70), "Organic Matter": (1.0, 4.0)}
+}
+
+def crop_match_score(sample: dict, crop_profile: dict):
+    """
+    Score how well a sample matches a crop profile.
+    Returns score 0..1 (1 = perfect match).
+    Approach: for each attribute present in both, compute closeness relative to ideal range.
+    """
+    scores = []
+    for k, rng in crop_profile.items():
+        if k not in sample or pd.isna(sample[k]):
+            continue
+        val = float(sample[k])
+        low, high = rng
+        # if inside ideal range -> score 1. if outside compute decreasing score
+        if low <= val <= high:
+            scores.append(1.0)
+        else:
+            # distance ratio: distance to range / width of range (clamped)
+            width = max(1e-6, high - low)
+            if val < low:
+                dist = (low - val) / width
+            else:
+                dist = (val - high) / width
+            # convert distance to a score between 0 and 1, using exponential decay
+            s = max(0.0, np.exp(-dist))
+            scores.append(s)
+    if not scores:
+        return 0.0
+    return float(np.mean(scores))
+
+def recommend_crops_for_sample(sample_series: pd.Series, top_n=3):
+    sample = sample_series.to_dict()
+    scored = []
+    for crop, profile in CROP_PROFILES.items():
+        s = crop_match_score(sample, profile)
+        scored.append((crop, s))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:top_n]
+
+# ----------------- Suitability scoring and color mapping -----------------
+def compute_suitability_score(row, features=None):
+    """
+    Compute a basic suitability score 0..1 using normalized values of features.
+    If a model is available, we can weight by feature importance (if provided in session results).
+    """
+    if features is None:
+        features = ['pH', 'Nitrogen', 'Phosphorus', 'Potassium', 'Moisture', 'Organic Matter']
+    vals = []
+    for f in features:
+        if f not in row or pd.isna(row[f]):
+            continue
+        vals.append(row[f])
+    if not vals:
+        return 0.0
+    # Normalize using simple min-max based on dataset quantiles to avoid outliers dominating
+    df = st.session_state.get("df")
+    if df is not None:
+        score_components = []
+        for f in features:
+            if f not in df.columns or f not in row or pd.isna(row[f]):
+                continue
+            low = df[f].quantile(0.05)
+            high = df[f].quantile(0.95)
+            if high - low <= 0:
+                norm = 0.5
+            else:
+                norm = (row[f] - low) / (high - low)
+            # clamp
+            norm = float(np.clip(norm, 0, 1))
+            score_components.append(norm)
+        if not score_components:
+            return 0.0
+        base_score = float(np.mean(score_components))
+    else:
+        base_score = float(np.mean(vals)) / (np.max(vals) if np.max(vals) != 0 else 1.0)
+    # If model feature importances available, weight them
+    fi = None
+    if st.session_state.get("results"):
+        fi = st.session_state["results"].get("feature_importances")
+        feat = st.session_state["results"].get("X_columns")
+    if fi and feat:
+        # compute weighted average of normalized features where possible
+        weights = {}
+        for f_name, w in zip(feat, fi):
+            weights[f_name] = w
+        weighted = []
+        for f, w in weights.items():
+            if f in row and f in df.columns and not pd.isna(row[f]):
+                low = df[f].quantile(0.05)
+                high = df[f].quantile(0.95)
+                if high - low <= 0:
+                    norm = 0.5
+                else:
+                    norm = (row[f] - low) / (high - low)
+                norm = float(np.clip(norm, 0, 1))
+                weighted.append(norm * w)
+        if weighted:
+            wsum = float(np.sum(list(weights.values())))
+            if wsum > 0:
+                return float(np.sum(weighted) / wsum)
+    return base_score
+
+def suitability_color(score):
+    # score in [0,1]
+    if score >= 0.66:
+        return ("Green", "#2ecc71")  # good
+    if score >= 0.33:
+        return ("Orange", "#f39c12")  # moderate
+    return ("Red", "#e74c3c")  # poor
+
+# ----------------- PROFILE / AVATAR HELPERS (unchanged) -----------------
 def pil_to_base64(img: Image.Image, fmt="PNG"):
     buf = sysio.BytesIO()
     img.save(buf, format=fmt)
@@ -278,10 +403,6 @@ def pil_to_base64(img: Image.Image, fmt="PNG"):
     return b
 
 def render_profile(name, session_key, upload_key):
-    """
-    Kept signature same. Displays avatar from assets folder or placeholder.
-    uploaders removed per earlier instruction.
-    """
     st.markdown("<div style='display:flex;flex-direction:column;align-items:center;text-align:center;'>", unsafe_allow_html=True)
     image_filename = None
     if "Andre" in name:
@@ -341,7 +462,7 @@ def render_profile(name, session_key, upload_key):
     st.markdown("<div style='font-size:14px;color:rgba(255,255,255,0.85);margin-top:4px;font-weight:600;'>BSIS 4-A</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ----------------- Upload & Preprocess widget -----------------
+# ----------------- Upload & Preprocess widget (slightly extended to handle lat/lon) -----------------
 def upload_and_preprocess_widget():
     st.markdown("### 📂 Upload Soil Data")
     st.markdown("Upload one or more soil analysis files (.csv or .xlsx). The app will attempt to standardize column names and auto-preprocess numeric columns.")
@@ -369,7 +490,7 @@ def upload_and_preprocess_widget():
                             renamed[alt] = std_col
                             break
                 df_file.rename(columns=renamed, inplace=True)
-                cols_to_keep = [col for col in required_columns if col in df_file.columns]
+                cols_to_keep = [col for col in required_columns + ['Latitude','Longitude'] if col in df_file.columns]
                 df_file = df_file[cols_to_keep]
                 safe_to_numeric_columns(df_file, cols_to_keep)
                 df_file.drop_duplicates(inplace=True)
@@ -381,7 +502,7 @@ def upload_and_preprocess_widget():
         if cleaned_dfs:
             df = pd.concat(cleaned_dfs, ignore_index=True, sort=False)
             df.replace(r'^\s*$', np.nan, regex=True, inplace=True)
-            safe_to_numeric_columns(df, required_columns)
+            safe_to_numeric_columns(df, required_columns + ['Latitude','Longitude'])
 
             numeric_cols = df.select_dtypes(include=[np.number]).columns
             if len(numeric_cols) > 0:
@@ -437,7 +558,6 @@ elif page == "🤖 Modeling":
 
         # ---- Mode toggle: checkbox (stateful) + visual switch that changes color ----
         st.markdown("#### Model Mode")
-        # model_mode_checkbox True => Regression, False => Classification
         default_checkbox = True if st.session_state.get("task_mode") == "Regression" else False
         chk = st.checkbox("Switch to Regression mode", value=default_checkbox, key="model_mode_checkbox")
         if chk:
@@ -448,7 +568,6 @@ elif page == "🤖 Modeling":
             st.session_state["current_theme"] = theme_classification
         apply_theme(st.session_state["current_theme"])
 
-        # Visual switch (reflects checkbox state) — purely visual
         switch_color = "#ff8aa2" if st.session_state["task_mode"] == "Regression" else "#81c784"
         st.markdown(f"""
         <style>
@@ -489,6 +608,10 @@ elif page == "🤖 Modeling":
             y = df['Nitrogen'] if 'Nitrogen' in df.columns else None
 
         numeric_features = df.select_dtypes(include=[np.number]).columns.tolist()
+        # Ensure we exclude Latitude/Longitude from features by default
+        for loccol in ['Latitude', 'Longitude']:
+            if loccol in numeric_features:
+                numeric_features.remove(loccol)
         if 'Nitrogen' in numeric_features:
             numeric_features.remove('Nitrogen')
 
@@ -528,10 +651,19 @@ elif page == "🤖 Modeling":
 
                     # cross-validation summary
                     try:
-                        cv_scores = cross_val_score(model, X_scaled_df, y, cv=5, scoring='accuracy' if st.session_state["task_mode"] == "Classification'".strip("'") else 'r2')
+                        cv_scores = cross_val_score(model, X_scaled_df, y, cv=5, scoring='accuracy' if st.session_state["task_mode"] == "Classification" else 'r2')
                         cv_summary = {"mean_cv": float(np.mean(cv_scores)), "std_cv": float(np.std(cv_scores))}
                     except Exception:
                         cv_summary = None
+
+                    # permutation importance (gives extra explainability)
+                    try:
+                        perm_imp = permutation_importance(model, X_test, y_test, n_repeats=10, random_state=42, n_jobs=-1)
+                        perm_df = pd.DataFrame({"feature": selected_features, "importance": perm_imp.importances_mean})
+                        perm_df = perm_df.sort_values("importance", ascending=False)
+                        perm_data = perm_df.to_dict('records')
+                    except Exception:
+                        perm_data = None
 
                     st.session_state["model"] = model
                     st.session_state["scaler"] = scaler
@@ -542,7 +674,8 @@ elif page == "🤖 Modeling":
                         "model_name": f"Random Forest {st.session_state['task_mode']} Model",
                         "X_columns": selected_features,
                         "feature_importances": model.feature_importances_.tolist(),
-                        "cv_summary": cv_summary
+                        "cv_summary": cv_summary,
+                        "permutation_importance": perm_data
                     }
                     st.session_state["trained_on_features"] = selected_features
                     st.success("✅ Training completed. Go to 'Results' to inspect performance.")
@@ -553,6 +686,14 @@ elif page == "🤖 Modeling":
                 new_inputs = {}
                 for f in selected_features:
                     new_inputs[f] = st.number_input(f"Value for {f}", value=float(np.median(df[f])) if f in df else 0.0, format="%.3f", key=f"input_{f}")
+                # location input optional to visualize on map
+                st.markdown("Optional: Provide location for this sample")
+                col1, col2 = st.columns(2)
+                with col1:
+                    lat_in = st.text_input("Latitude (optional)", key="new_lat")
+                with col2:
+                    lon_in = st.text_input("Longitude (optional)", key="new_lon")
+
                 if st.button("🔮 Predict Sample"):
                     input_df = pd.DataFrame([new_inputs])
                     scaler_local = st.session_state["scaler"] if st.session_state.get("scaler") else MinMaxScaler().fit(df[selected_features])
@@ -565,6 +706,30 @@ elif page == "🤖 Modeling":
                         st.write(expl)
                     else:
                         st.markdown(f"**Predicted Nitrogen:** <span style='color:{st.session_state['current_theme']['primary_color']};font-weight:700'>{pred[0]:.3f}</span>", unsafe_allow_html=True)
+
+                    # score suitability, recommend crops
+                    sample_row = {k: v for k, v in new_inputs.items()}
+                    # if nitrogen column expected in features but not provided, the predicted value can be used
+                    if st.session_state["task_mode"] == "Regression" and 'Nitrogen' not in sample_row:
+                        sample_row['Nitrogen'] = float(pred[0])
+                    sample_series = pd.Series(sample_row)
+                    score = compute_suitability_score(sample_series, features=['pH','Nitrogen','Phosphorus','Potassium','Moisture','Organic Matter'])
+                    label, hexc = suitability_color(score)
+                    st.markdown(f"**Suitability Score:** {score:.3f} — <span style='color:{hexc};font-weight:700'>{label}</span>", unsafe_allow_html=True)
+                    crops = recommend_crops_for_sample(sample_series, top_n=4)
+                    st.markdown("**Top crop recommendations (sample):**")
+                    for c, s in crops:
+                        col_tag = suitability_color(s)[1] if s is not None else "#999999"
+                        st.markdown(f"- **{c}** — match score: {s:.2f}")
+
+                    # show location on map if provided
+                    if lat_in and lon_in:
+                        try:
+                            latv = float(lat_in); lonv = float(lon_in)
+                            map_df = pd.DataFrame([{"lat": latv, "lon": lonv}])
+                            st.map(map_df.rename(columns={"lat":"lat","lon":"lon"}))
+                        except Exception:
+                            st.warning("Location could not be parsed to numeric lat/lon.")
 
 # ----------------- VISUALIZATION -----------------
 elif page == "📊 Visualization":
@@ -589,7 +754,6 @@ elif page == "📊 Visualization":
                 fig = px.histogram(df, x=col, nbins=30, marginal="box", title=f"Distribution: {col}", color_discrete_sequence=[st.session_state["current_theme"]["primary_color"]])
                 fig.update_layout(template="plotly_dark")
                 st.plotly_chart(fig, use_container_width=True)
-                # small explanation
                 st.markdown(f"<div style='font-size:13px;color:rgba(255,255,255,0.85)'>This histogram shows the distribution of **{col}** across samples. Use the median and spread to assess central tendency and variability.</div>", unsafe_allow_html=True)
                 st.markdown("---")
 
@@ -622,16 +786,28 @@ elif page == "📊 Visualization":
                 st.warning("Nitrogen column required for Regression visuals.")
             else:
                 # show scatter of Nitrogen vs top numeric columns
-                top_num = [c for c in df.select_dtypes(include=[np.number]).columns if c != 'Nitrogen'][:3]
+                top_num = [c for c in df.select_dtypes(include=[np.number]).columns if c != 'Nitrogen' and c not in ['Latitude','Longitude']][:3]
                 for feat in top_num:
                     fig_sc = px.scatter(df, x=feat, y='Nitrogen', trendline="ols", title=f"Nitrogen vs {feat}")
-                    # try to safely compute trendline (statsmodels required). Plotly will warn if missing.
                     try:
                         fig_sc.update_layout(template="plotly_dark")
                     except Exception:
                         pass
                     st.plotly_chart(fig_sc, use_container_width=True)
                     st.markdown(f"<div style='font-size:13px;color:rgba(255,255,255,0.85)'>Scatter showing relationship of {feat} against Nitrogen. Trendline (OLS) included if statsmodels is available.</div>", unsafe_allow_html=True)
+
+        # Map view if lat/lon present
+        st.markdown("---")
+        st.subheader("Location View (if coordinates present)")
+        if 'Latitude' in df.columns and 'Longitude' in df.columns:
+            map_df = df[['Latitude', 'Longitude']].dropna().rename(columns={'Latitude':'lat','Longitude':'lon'})
+            if not map_df.empty:
+                st.map(map_df)
+                st.markdown("Map shows sample positions. Use coordinates for location-aware recommendations.")
+            else:
+                st.info("Latitude/Longitude columns present but no valid coordinates found.")
+        else:
+            st.info("No Latitude/Longitude columns found. Add columns named 'Latitude' and 'Longitude' to enable map view.")
 
 # ----------------- RESULTS -----------------
 elif page == "📈 Results":
@@ -696,9 +872,7 @@ elif page == "📈 Results":
                     rep_df = pd.DataFrame(rep).transpose().reset_index()
                     rep_df.rename(columns={"index":"Class"}, inplace=True)
                     cols_order = ["Class","precision","recall","f1-score","support"]
-                    # ensure columns present
                     rep_df = rep_df[[c for c in cols_order if c in rep_df.columns]]
-                    # style and display
                     styled = rep_df.style.format({
                         "precision":"{:.2f}",
                         "recall":"{:.2f}",
@@ -724,7 +898,6 @@ elif page == "📈 Results":
                 df_res = pd.DataFrame({"Actual_Nitrogen": y_test, "Predicted_Nitrogen": y_pred})
                 st.markdown("**Sample predictions**")
                 st.dataframe(df_res.head(10), use_container_width=True)
-                # scatter actual vs pred with trendline if possible
                 st.markdown("**Actual vs Predicted**")
                 try:
                     fig1 = px.scatter(df_res, x="Actual_Nitrogen", y="Predicted_Nitrogen", trendline="ols",
@@ -732,7 +905,6 @@ elif page == "📈 Results":
                     fig1.update_layout(template="plotly_dark")
                     st.plotly_chart(fig1, use_container_width=True)
                 except Exception:
-                    # fallback without trendline
                     fig1 = px.scatter(df_res, x="Actual_Nitrogen", y="Predicted_Nitrogen",
                                       title="Actual vs Predicted Nitrogen (no trendline available)")
                     fig1.update_layout(template="plotly_dark")
@@ -757,42 +929,146 @@ elif page == "📈 Results":
                 st.markdown("- **MAE:** Mean Absolute Error — average magnitude of errors.")
                 st.markdown("- **R²:** Proportion of variance explained by the model (1 is perfect).")
             st.markdown("---")
-            st.markdown("**Feature importances** (Top 5)")
+            st.markdown("**Feature importances** (Top 8)")
             fi = results.get("feature_importances", [])
             feat = results.get("X_columns", [])
             if fi and feat:
-                df_fi = pd.DataFrame({"feature": feat, "importance": fi}).sort_values("importance", ascending=False).head(5)
+                df_fi = pd.DataFrame({"feature": feat, "importance": fi}).sort_values("importance", ascending=False).head(8)
                 st.table(df_fi.reset_index(drop=True))
             else:
                 st.info("No feature importances available.")
 
-# ----------------- INSIGHTS -----------------
+            # show permutation importance if available
+            if results.get("permutation_importance"):
+                st.markdown("---")
+                st.markdown("**Permutation Importances (test set)**")
+                perm_df = pd.DataFrame(results["permutation_importance"])
+                if not perm_df.empty:
+                    perm_df = perm_df.rename(columns={"feature":"feature","importance":"importance"})
+                    st.table(perm_df)
+            # Detailed explanation of Random Forest
+            st.markdown("---")
+            st.subheader("How Random Forest works (brief)")
+            st.markdown("""
+            - A Random Forest builds many decision trees on random subsets of the data and features.
+            - Each tree votes (classification) or averages (regression) to form the final prediction.
+            - Advantages: robust to overfitting, can handle mixed features, and provides feature importances.
+            - We also use permutation importance to estimate how much each feature affects predictive performance by randomly shuffling it and measuring the drop in score.
+            """)
+
+# ----------------- INSIGHTS (ENHANCED) -----------------
 elif page == "🌿 Insights":
-    st.title("🌿 Soil Health Insights")
-    st.markdown("Automated soil health recommendations based on model outputs and feature signals.")
-    if st.session_state["results"] is None:
-        st.info("Train a model to get data-driven insights.")
+    st.title("🌿 Soil Health Insights & Crop Recommendations")
+    st.markdown("Automated soil health recommendations based on model outputs, clustering, and crop suitability matching.")
+    if st.session_state["df"] is None:
+        st.info("Upload and preprocess a dataset first (Home).")
     else:
-        df = st.session_state["df"]
-        fi = st.session_state["results"].get("feature_importances", [])
-        feat = st.session_state["results"].get("X_columns", [])
-        if fi and feat:
-            df_fi = pd.DataFrame({"feature": feat, "importance": fi}).sort_values("importance", ascending=False)
-            st.subheader("Top Features Influencing Predictions")
-            for i, row in df_fi.head(5).iterrows():
-                st.write(f"- **{row['feature']}** (importance: {row['importance']:.3f}) — median: {df[row['feature']].median():.3f}")
-            st.markdown("### Recommendations")
-            st.write("The suggestions below are generic. Use domain expertise before applying changes to soils.")
-            if 'Nitrogen' in df.columns:
-                median_n = df['Nitrogen'].median()
-                if median_n < df['Nitrogen'].quantile(0.33):
-                    st.info("Nitrogen tends to be low — consider organic amendments like compost or legume cover crops.")
-                elif median_n > df['Nitrogen'].quantile(0.66):
-                    st.warning("Nitrogen tends to be high — evaluate fertilizer application and leaching risks.")
-                else:
-                    st.success("Nitrogen levels are moderate across samples.")
+        df = st.session_state["df"].copy()
+        st.subheader("Dataset overview")
+        st.write(f"Samples: {df.shape[0]}  — Columns: {df.shape[1]}")
+        st.markdown("---")
+
+        # 1) compute per-sample suitability score and color
+        st.subheader("Sample-level suitability & recommendations")
+        display_cols = [c for c in ['pH','Nitrogen','Phosphorus','Potassium','Moisture','Organic Matter','Latitude','Longitude'] if c in df.columns]
+        preview = df[display_cols].copy()
+        preview['suitability_score'] = preview.apply(lambda r: compute_suitability_score(r, features=['pH','Nitrogen','Phosphorus','Potassium','Moisture','Organic Matter']), axis=1)
+        preview['suitability_label'] = preview['suitability_score'].apply(lambda s: suitability_color(s)[0])
+        preview['suitability_hex'] = preview['suitability_score'].apply(lambda s: suitability_color(s)[1])
+        # recommend top crop for each sample (first 1 to keep it light)
+        def _rec_small(row):
+            s = recommend_crops_for_sample(row, top_n=3)
+            return ", ".join([f"{c} ({score:.2f})" for c, score in s])
+        preview['top_crops'] = preview.apply(lambda r: _rec_small(r), axis=1)
+        st.dataframe(preview.head(20), use_container_width=True)
+
+        # 2) show map colored by suitability if coordinates exist
+        if 'Latitude' in df.columns and 'Longitude' in df.columns:
+            st.markdown("**Map: colored by suitability**")
+            map_df = preview[['Latitude','Longitude','suitability_score','suitability_label']].dropna()
+            if not map_df.empty:
+                # create color column for map popups
+                map_df = map_df.rename(columns={'Latitude':'lat','Longitude':'lon'})
+                st.map(map_df[['lat','lon']])
+                st.markdown("Note: Streamlit's built-in map shows points. Use the table above for colors & recommendations.")
         else:
-            st.info("No model-based insights available yet. Train a model first.")
+            st.info("No coordinates present. Add 'Latitude' and 'Longitude' columns to map sample locations.")
+
+        st.markdown("---")
+        # 3) Clustering
+        st.subheader("Clustering samples (KMeans) — find groups of similar soils")
+        # select features for clustering
+        cluster_features = [f for f in ['pH','Nitrogen','Phosphorus','Potassium','Moisture','Organic Matter'] if f in df.columns]
+        if len(cluster_features) < 2:
+            st.info("Need at least two numeric soil parameters for clustering.")
+        else:
+            k = st.slider("Number of clusters (K)", 2, min(8, max(2, int(np.sqrt(len(df))))), 3)
+            scaler_k = StandardScaler()
+            Xk = scaler_k.fit_transform(df[cluster_features])
+            kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+            cluster_labels = kmeans.fit_predict(Xk)
+            df['cluster'] = cluster_labels
+            st.write("Cluster sizes:")
+            st.write(df['cluster'].value_counts().to_frame("count"))
+
+            # cluster medians and suitability, crop suggestions
+            cluster_summaries = []
+            for cl in sorted(df['cluster'].unique()):
+                sub = df[df['cluster'] == cl]
+                med = sub[cluster_features].median()
+                # compute cluster suitability by averaging compute_suitability_score over medians
+                med_series = med
+                med_score = compute_suitability_score(med_series, features=cluster_features)
+                label, hexc = suitability_color(med_score)
+                # crop suggestions using medians
+                med_row = med_series.copy()
+                # convert med_row to Series with full expected keys if missing
+                crop_recs = recommend_crops_for_sample(med_row, top_n=4)
+                cluster_summaries.append({
+                    "cluster": int(cl),
+                    "size": int(sub.shape[0]),
+                    "median_values": med.to_dict(),
+                    "suitability_score": float(med_score),
+                    "suitability_label": label,
+                    "suitability_hex": hexc,
+                    "top_crops": crop_recs
+                })
+            # show cluster cards
+            for csum in cluster_summaries:
+                st.markdown(f"### Cluster {csum['cluster']} — size: {csum['size']}")
+                st.markdown(f"- Suitability: **{csum['suitability_label']}** ({csum['suitability_score']:.2f})")
+                st.markdown("- Median values:")
+                for kf, kv in csum['median_values'].items():
+                    st.markdown(f"  - {kf}: {kv:.3f}")
+                st.markdown("- Recommended crops (cluster-level):")
+                for crop, s in csum['top_crops']:
+                    st.markdown(f"  - **{crop}** — match: {s:.2f}")
+                st.markdown("---")
+
+        # 4) If model present, show feature importance and explainability
+        if st.session_state.get("results"):
+            st.subheader("Model-based insights")
+            res = st.session_state["results"]
+            if res.get("feature_importances") and res.get("X_columns"):
+                fi_df = pd.DataFrame({"feature": res["X_columns"], "importance": res["feature_importances"]}).sort_values("importance", ascending=False)
+                st.markdown("**Feature importances (model)**")
+                st.table(fi_df.head(10))
+
+            if res.get("permutation_importance"):
+                st.markdown("**Permutation importance (test set)**")
+                st.table(pd.DataFrame(res["permutation_importance"]).head(10))
+
+            st.markdown("**Local sample explanation (by top features)**")
+            st.markdown("Pick a dataset row index to see which features drive suitability/prediction.")
+            idx = st.number_input("Row index", min_value=0, max_value=max(0, df.shape[0]-1), value=0, step=1)
+            row = df.iloc[int(idx)]
+            st.write(row[cluster_features])
+            # show top features and values
+            top_feats = (res.get("X_columns")[:5] if res.get("X_columns") else cluster_features[:5])
+            st.markdown("Top features (value and median):")
+            for f in top_feats:
+                if f in row:
+                    st.markdown(f"- **{f}** = {row[f]:.3f} (dataset median: {df[f].median():.3f})")
 
 # ----------------- ABOUT / PROFILE -----------------
 elif page == "👤 About":
