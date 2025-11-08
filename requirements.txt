@@ -1,38 +1,9 @@
-# Core framework
 streamlit==1.39.0
-
-# Data handling
+streamlit-option-menu==0.3.12
 pandas==2.2.3
 numpy==1.26.4
-
-# Visualization
-matplotlib==3.9.2
 plotly==5.24.1
-seaborn==0.13.2
-
-# Machine learning
 scikit-learn==1.5.2
-xgboost==2.1.2
 joblib==1.4.2
-
-# Time series / forecasting
-statsmodels==0.14.4
-pmdarima==2.0.4
-
-# Data preprocessing
-scipy==1.14.1
-
-# File I/O
+Pillow==10.4.0
 openpyxl==3.1.5
-
-# For geospatial or mapping (optional — if you use maps)
-geopandas==1.0.1
-shapely==2.0.5
-folium==0.17.0
-
-# Utility
-requests==2.32.3
-tqdm==4.67.1
-
-# To fix some Streamlit + Plotly issues
-protobuf==4.25.5
