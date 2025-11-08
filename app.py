@@ -182,7 +182,7 @@ column_mapping = {
     'Phosphorus': ['Phosphorus', 'P'],
     'Potassium': ['Potassium', 'K'],
     'Moisture': ['Moisture', 'Soil_Moisture'],
-    'Organic Matter': ['Organic Matter', 'OM', 'oc'],
+    'Organic Matter': ['Organic Matter','OrganicMatter', 'OM', 'oc'],
     'Latitude': ['Latitude', 'Lat', 'lat'],
     'Longitude': ['Longitude', 'Lon', 'Lng', 'lon', 'lng']
 }
