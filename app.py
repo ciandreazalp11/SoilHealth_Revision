@@ -767,8 +767,9 @@ elif page == "👤 About":
     st.write("")  # spacing
     col_a, col_b = st.columns([1,1])
     with col_a:
-        st.markdown("Andre Oneal A. Plaza")
+        render_profile("Andre Oneal A. Plaza", "profile_andre", "upload_andre")
     with col_b:
-        st.markdown("Rica Baliling")
+        render_profile("Rica Baliling", "profile_rica", "upload_rica")
     st.markdown("---")
+    st.markdown("All glory to God.")
     st.write("Developed for a capstone project.")
