@@ -25,8 +25,6 @@ st.set_page_config(
     page_icon="🌿"
 )
 
-# Themes as in your previous code
-
 theme_classification = {
     "background_main": "linear-gradient(120deg, #0f2c2c 0%, #1a4141 40%, #0e2a2a 100%)",
     "sidebar_bg": "rgba(15, 30, 30, 0.95)",
@@ -404,41 +402,85 @@ def upload_and_preprocess_widget():
         else:
             st.error("No valid sheets processed. Check file formats and column headers.")
 
-# ---------- Profile Renderer Section ----------
-def render_profile(name, session_key, upload_key):
-    st.markdown(f"**{name}**")
-    profile_img_path = st.session_state.get(session_key, None)
-    suggested_path = f"assets/{name.lower().replace(' ', '_')}.png"
-    # Try: if already uploaded this session
-    if profile_img_path and os.path.isfile(profile_img_path):
-        image = Image.open(profile_img_path)
-        st.image(image, width=170)
-    # Try: if exists in suggested asset path
-    elif os.path.isfile(suggested_path):
-        image = Image.open(suggested_path)
-        st.image(image, width=170)
-    else:
-        # Upload widget for new image
-        uploaded_img = st.file_uploader(
-            f"Upload profile photo for {name}", type=["png", "jpg", "jpeg"], key=upload_key
-        )
-        if uploaded_img:
-            img_bytes = uploaded_img.read()
-            temp_path = f"temp_{name.lower().replace(' ', '_')}.png"
-            with open(temp_path, "wb") as temp_file:
-                temp_file.write(img_bytes)
-            st.session_state[session_key] = temp_path
-            st.image(Image.open(temp_path), width=170)
-            st.success("Image uploaded for this session.")
-        else:
-            st.info(f"No profile image found for {name}. Upload one!")
-    # Add name and description if desired below
-    if "andre" in name.lower():
-        st.markdown("> Developer | Machine Learning, Full Stack, Soil Science\n")
-    elif "rica" in name.lower():
-        st.markdown("> Developer | Data Analysis, Visualization, Soil Science\n")
+# ==== Avatar Holographic Profile Renderer for About Page ====
+def render_profile(name, asset_filename):
+    st.markdown("""
+    <style>
+    .avatar-card {
+        display: flex; flex-direction: column; align-items: center; 
+        margin-bottom: 22px;
+    }
+    .avatar-holo {
+        width: 170px; height: 170px;
+        border-radius: 50%;
+        background: conic-gradient(from 180deg at 50% 50%, #00ffd0, #fff700, #ff00d4, #00ffd0 100%);
+        padding: 6px; /* border size */
+        box-shadow: 0 0 19px 2px #00ffd088, 0 0 36px 11px #ff00d455;
+        position: relative;
+        margin-bottom: 18px;
+        transition: box-shadow 0.3s ease;
+        animation: hologlow 2.9s infinite alternate;
+    }
+    @keyframes hologlow {
+      to {
+        box-shadow: 0 0 9px 6px #fff70077, 0 0 80px 11px #0ffbdd44;
+      }
+    }
+    .avatar-holo img {
+        width: 100%; height: 100%; object-fit: cover; border-radius: 50%;
+        box-shadow: 0 3px 15px #0004;
+        background: #fff;
+    }
+    .avatar-name {
+      font-size: 22px; font-weight: 700;
+      color: #00ffd0; 
+      margin-bottom: 6px; margin-top: -4px;
+      letter-spacing: 1px;
+    }
+    .avatar-role {
+      font-size: 14px;
+      color: #444; font-style: italic;
+      padding-bottom: 2px;
+    }
+    .bsis-label {
+      margin-top: 7px; margin-bottom: 7px;
+      padding: 5px 18px; font-size: 16.5px; font-weight: 700;
+      color: #fff; background: linear-gradient(to right, #1dd1ff, #ff75db);
+      border-radius: 18px; border: none;
+      box-shadow: 0 2px 10px #00ffd066;
+      text-align: center; display: inline-block; letter-spacing: 1.3px;
+      outline: none;
+      transition: background 0.2s;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-# ---------- MAIN PAGE LOGIC ----------
+    asset_path = f"assets/{asset_filename}"
+    try:
+        image = Image.open(asset_path)
+        buf = BytesIO()
+        image.save(buf, format="PNG")
+        img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        img_html = f'<img src="data:image/png;base64,{img_b64}" alt="profile" />'
+    except Exception:
+        img_html = '<div style="width:170px;height:170px;background:#eee;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#aaa;">No Image</div>'
+
+    role_line = ""
+    if "andre" in name.lower():
+        role_line = "Developer | Machine Learning, Full Stack, Soil Science"
+    elif "rica" in name.lower():
+        role_line = "Developer | Data Analysis, Visualization, Soil Science"
+
+    st.markdown(f"""
+    <div class="avatar-card">
+        <div class="avatar-holo">{img_html}</div>
+        <div class="avatar-name">{name}</div>
+        <div class="avatar-role">{role_line}</div>
+        <div class="bsis-label">BSIS-4A</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ---------------- MAIN PAGE LOGIC -----------------
 if page == "🏠 Home":
     st.title("Machine Learning-Driven Soil Analysis for Sustainable Agriculture System")
     st.markdown("<small style='color:rgba(255,255,255,0.75)'>Capstone Project</small>", unsafe_allow_html=True)
@@ -798,13 +840,13 @@ elif page == "🌿 Insights":
 
 elif page == "👤 About":
     st.title("👤 About the Makers")
-    st.markdown("Developed by:")
-    st.write("")  # spacing
+    st.markdown("<div style='font-size:19px;'>Developed by:</div>", unsafe_allow_html=True)
+    st.write("")
     col_a, col_b = st.columns([1,1])
     with col_a:
-        render_profile("Andre Oneal A. Plaza", "profile_andre", "upload_andre")
+        render_profile("Andre Oneal A. Plaza", "andre_oneal_a._plaza.png")
     with col_b:
-        render_profile("Rica Baliling", "profile_rica", "upload_rica")
+        render_profile("Rica Baliling", "rica_baliling.png")
     st.markdown("---")
-    st.markdown("All glory to God.")
+    st.markdown("<div style='font-size:15px;color:#cd5fff;font-weight:600;'>All glory to God.</div>", unsafe_allow_html=True)
     st.write("Developed for a capstone project.")
