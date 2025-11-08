@@ -76,7 +76,6 @@ theme_sakura = {
     "title_color": "#ffd6e0",
 }
 
-# Session state defaults
 if "current_theme" not in st.session_state:
     st.session_state["current_theme"] = theme_classification
 if "df" not in st.session_state:
@@ -595,54 +594,92 @@ elif page == "🤖 Modeling":
                     st.success("✅ Training completed. Go to 'Results' to inspect performance.")
             st.markdown("### Predict a New Sample")
             if st.session_state.get("model"):
-                # ... unchanged new sample prediction logic ...
-                pass
+                new_inputs = {}
+                for f in selected_features:
+                    new_inputs[f] = st.number_input(f"Value for {f}", value=float(np.median(df[f])) if f in df else 0.0, format="%.3f", key=f"input_{f}")
+                st.markdown("Optional: Provide location for this sample")
+                col1, col2 = st.columns(2)
+                with col1:
+                    lat_in = st.text_input("Latitude (optional)", key="new_lat")
+                with col2:
+                    lon_in = st.text_input("Longitude (optional)", key="new_lon")
+                if st.button("🔮 Predict Sample"):
+                    input_df = pd.DataFrame([new_inputs])
+                    scaler_local = st.session_state["scaler"] if st.session_state.get("scaler") else MinMaxScaler().fit(df[selected_features])
+                    input_scaled = scaler_local.transform(input_df)
+                    pred = st.session_state["model"].predict(input_scaled)
+                    st.subheader("Prediction")
+                    if st.session_state["task_mode"] == "Classification":
+                        pred_label, color, expl = interpret_label(pred[0])
+                        st.markdown(f"**Predicted Fertility:** <span style='color:{color};font-weight:700'>{pred_label}</span>", unsafe_allow_html=True)
+                        st.write(expl)
+                    else:
+                        st.markdown(f"**Predicted Nitrogen:** <span style='color:{st.session_state['current_theme']['primary_color']};font-weight:700'>{pred[0]:.3f}</span>", unsafe_allow_html=True)
+                    sample_row = {k: v for k, v in new_inputs.items()}
+                    if st.session_state["task_mode"] == "Regression" and 'Nitrogen' not in sample_row:
+                        sample_row['Nitrogen'] = float(pred[0])
+                    sample_series = pd.Series(sample_row)
+                    score = compute_suitability_score(sample_series, features=['pH','Nitrogen','Phosphorus','Potassium','Moisture','Organic Matter'])
+                    label, hexc = suitability_color(score)
+                    st.markdown(f"**Suitability Score:** {score:.3f} — <span style='color:{hexc};font-weight:700'>{label}</span>", unsafe_allow_html=True)
+                    crops = recommend_crops_for_sample(sample_series, top_n=4)
+                    st.markdown("**Top crop recommendations (sample):**")
+                    for c, s in crops:
+                        col_tag = suitability_color(s)[1] if s is not None else "#999999"
+                        st.markdown(f"- **{c}** — match score: {s:.2f}")
+                    if lat_in and lon_in:
+                        try:
+                            latv = float(lat_in); lonv = float(lon_in)
+                            if -90 <= latv <= 90 and -180 <= lonv <= 180:
+                                map_df = pd.DataFrame([{"lat": latv, "lon": lonv}])
+                                st.map(map_df)
+                            else:
+                                st.warning("Latitude or Longitude out of valid range.")
+                        except Exception:
+                            st.warning("Location could not be parsed to numeric lat/lon.")
 
 elif page == "🌿 Insights":
     st.title("🌿 Soil Health Insights & Crop Recommendations")
-    st.markdown("Automated soil health recommendations based on model outputs, clustering, and crop suitability matching.")
 
-    # --- Legend for suitability colors ---
-    st.markdown("### 🗺️ Suitability Color Legend")
-    st.markdown("""
-    <style>
-    .legend-row { font-size: 17px; margin-bottom: 4px; }
-    </style>
-    <div class="legend-row"><span style='color:#2ecc71;font-size:18px'>🟢 Green</span>: <b>Good/Sustainable</b> &mdash; Soil is ideal for cropping.<br>
-    <b>Recommended crops:</b> Rice, Corn, Cassava, Vegetables, Banana, Coconut.</div>
-    <div class="legend-row"><span style='color:#f39c12;font-size:18px'>🟠 Orange</span>: <b>Moderate</b> &mdash; Moderately suitable soil.<br>
-    <b>Actions:</b> Nutrient adjustment needed.<br>
-    <b>Crops:</b> Corn, Cassava, selected vegetables.</div>
-    <div class="legend-row"><span style='color:#e74c3c;font-size:18px'>🔴 Red</span>: <b>Poor/Unsuitable</b> &mdash; Not recommended for cropping.<br>
-    <b>Actions:</b> Major improvement needed.<br>
-    <b>Crops:</b> Only very hardy types after soil amendment.</div>
-    """, unsafe_allow_html=True)
-
-    # --- OVERALL RESULT/VERDICT & RECOMMENDED CROPS FOR DATASET ---
+    # ----- Emphasized overall verdict -----
     if st.session_state["df"] is None:
         st.info("Upload and preprocess a dataset first (Home).")
     else:
         df = st.session_state["df"].copy()
         features = ['pH','Nitrogen','Phosphorus','Potassium','Moisture','Organic Matter']
+        show_verdict = False
         if all(f in df.columns for f in features):
+            show_verdict = True
             median_row = df[features].median()
             overall_score = compute_suitability_score(median_row, features=features)
             label, color_hex = suitability_color(overall_score)
             crops = recommend_crops_for_sample(median_row, top_n=3)
             crop_list = ', '.join([c[0] for c in crops])
 
-            if label == "Green":
-                verdict_text = f"🟢 <b>Good/Sustainable:</b> The overall soil health is excellent and suitable for sustainable agriculture.<br><b>Recommended crops for the area:</b> {crop_list}."
-            elif label == "Orange":
-                verdict_text = f"🟠 <b>Moderate:</b> The soil is moderately suitable. Some improvements (fertilizer/pH adjustment) may help.<br><b>Possible crops for the area:</b> {crop_list}."
-            else:
-                verdict_text = f"🔴 <b>Poor:</b> The soil is currently unsuitable for most crops. Significant amendments are needed.<br><b>Possible crops (with treatment):</b> {crop_list}."
+            st.markdown(f"""
+            <div style="
+                border:2.5px solid {color_hex};
+                border-radius:18px;
+                background: linear-gradient(100deg, {color_hex}22 0%, #f4fff4 100%);
+                padding:24px 24px 12px 24px;
+                margin-top:0;margin-bottom:34px;
+                box-shadow:0 0px 32px 0px {color_hex}33;
+                text-align:left;">
+                <h3 style='margin-top:0'>🌾 <span style="color:{color_hex};font-weight:bold;">Overall Dataset Verdict</span></h3>
+                <div style='font-size:22px;font-weight:700;padding-top:2px;'>
+                    {('🟢' if label == 'Green' else '🟠' if label == 'Orange' else '🔴')} <span style="color:{color_hex};">{label.upper()}</span>
+                </div>
+                <p style="font-size:17px;">
+                {(
+                    f"The overall soil health is <b>excellent</b> and suitable for sustainable agriculture.<br><b>Recommended crops:</b> <span style='color:{color_hex}'>{crop_list}</span>." if label == "Green" else
+                    f"The soil is <b>moderately suitable</b>. Some improvements (fertilizer/pH adjustment) may help.<br><b>Possible crops:</b> <span style='color:{color_hex}'>{crop_list}</span>." if label == "Orange" else
+                    f"The soil is <b>currently unsuitable</b> for most crops. Significant amendments are needed.<br><b>Possible crops with treatment:</b> <span style='color:{color_hex}'>{crop_list}</span>."
+                )}
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
 
-            st.markdown(f"""<div style='border:2px solid {color_hex};border-radius:10px;padding:16px;margin-bottom:16px;background-color:rgba(190,255,190,0.06)'>
-            <h4>🌾 Overall Dataset Verdict</h4>
-            {verdict_text}
-            </div>""", unsafe_allow_html=True)
-
+        # ----------- Dataset Overview/Rest of page -----------
         st.subheader("Dataset overview")
         st.write(f"Samples: {df.shape[0]}  — Columns: {df.shape[1]}")
         st.markdown("---")
@@ -669,6 +706,46 @@ elif page == "🌿 Insights":
             return verdict
         preview['verdict'] = preview.apply(agriculture_verdict, axis=1)
         st.dataframe(preview[['pH', 'Nitrogen', 'Phosphorus', 'Potassium', 'Moisture', 'Organic Matter', 'suitability_score', 'suitability_label', 'top_crops', 'verdict']], use_container_width=True)
+
+        # Legend below - visually distinct and concise
+        st.markdown("---")
+        st.markdown("### Soil Suitability Color Legend")
+        st.markdown("""
+        <style>
+        .legend-table {
+            width: 97%;
+            margin: 0 auto;
+            background: rgba(255,255,255,0.06);
+            border-radius: 11px;
+            border: 1.4px solid #eee;
+            box-shadow: 0 4px 16px #0001;
+            font-size:17px;
+        }
+        .legend-table td {
+            padding:10px 16px;
+        }
+        </style>
+        <table class="legend-table">
+          <tr>
+            <td><span style="color:#2ecc71;font-weight:900;font-size:20px;">🟢 Green</span></td>
+            <td><b>Good/Sustainable</b>. Soil is ideal for cropping.<br>
+            <b>Recommended crops:</b> Rice, Corn, Cassava, Vegetables, Banana, Coconut.</td>
+          </tr>
+          <tr>
+            <td><span style="color:#f39c12;font-weight:900;font-size:20px;">🟠 Orange</span></td>
+            <td><b>Moderate</b>. Soil is OK but may require improvement.<br>
+            <b>Actions:</b> Nutrient/fertilizer adjustment.<br>
+            <b>Crops:</b> Corn, Cassava, selected vegetables.</td>
+          </tr>
+          <tr>
+            <td><span style="color:#e74c3c;font-weight:900;font-size:20px;">🔴 Red</span></td>
+            <td><b>Poor/Unsuitable</b>. Not recommended for cropping.<br>
+            <b>Actions:</b> Major improvement needed.<br>
+            <b>Crops:</b> Only hardy types after soil amendment.</td>
+          </tr>
+        </table>
+        """, unsafe_allow_html=True)
+
         if 'Latitude' in df.columns and 'Longitude' in df.columns:
             st.markdown("**Map: colored by suitability**")
             map_df = preview[['Latitude','Longitude','suitability_score','suitability_label']].dropna()
@@ -678,7 +755,7 @@ elif page == "🌿 Insights":
         else:
             st.info("No coordinates present. Add 'Latitude' and 'Longitude' columns to map sample locations.")
         st.markdown("---")
-        # ... [clustering, model-based insights etc. unchanged from original app.py] ...
+        # Clustering, clustering verdicts, feature importances, etc would follow (as in original)
 
 elif page == "👤 About":
     st.title("👤 About the Makers")
