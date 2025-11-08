@@ -404,6 +404,41 @@ def upload_and_preprocess_widget():
         else:
             st.error("No valid sheets processed. Check file formats and column headers.")
 
+# ---------- Profile Renderer Section ----------
+def render_profile(name, session_key, upload_key):
+    st.markdown(f"**{name}**")
+    profile_img_path = st.session_state.get(session_key, None)
+    suggested_path = f"assets/{name.lower().replace(' ', '_')}.png"
+    # Try: if already uploaded this session
+    if profile_img_path and os.path.isfile(profile_img_path):
+        image = Image.open(profile_img_path)
+        st.image(image, width=170)
+    # Try: if exists in suggested asset path
+    elif os.path.isfile(suggested_path):
+        image = Image.open(suggested_path)
+        st.image(image, width=170)
+    else:
+        # Upload widget for new image
+        uploaded_img = st.file_uploader(
+            f"Upload profile photo for {name}", type=["png", "jpg", "jpeg"], key=upload_key
+        )
+        if uploaded_img:
+            img_bytes = uploaded_img.read()
+            temp_path = f"temp_{name.lower().replace(' ', '_')}.png"
+            with open(temp_path, "wb") as temp_file:
+                temp_file.write(img_bytes)
+            st.session_state[session_key] = temp_path
+            st.image(Image.open(temp_path), width=170)
+            st.success("Image uploaded for this session.")
+        else:
+            st.info(f"No profile image found for {name}. Upload one!")
+    # Add name and description if desired below
+    if "andre" in name.lower():
+        st.markdown("> Developer | Machine Learning, Full Stack, Soil Science\n")
+    elif "rica" in name.lower():
+        st.markdown("> Developer | Data Analysis, Visualization, Soil Science\n")
+
+# ---------- MAIN PAGE LOGIC ----------
 if page == "🏠 Home":
     st.title("Machine Learning-Driven Soil Analysis for Sustainable Agriculture System")
     st.markdown("<small style='color:rgba(255,255,255,0.75)'>Capstone Project</small>", unsafe_allow_html=True)
