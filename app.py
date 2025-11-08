@@ -551,7 +551,8 @@ elif page == "🤖 Modeling":
             X_scaled_df = pd.DataFrame(X_scaled, columns=selected_features)
             test_size = st.slider("Test set fraction (%)", 10, 40, 20, step=5)
             X_train, X_test, y_train, y_test = train_test_split(X_scaled_df, y, test_size=test_size/100, random_state=42)
-            if st.button("🚀 Train Model"):
+            # -- Training ONLY when button clicked --
+            if st.button("🚀 Train Random Forest"):
                 if n_estimators > 300:
                     st.info("High n_estimators may take a while to train! Consider lowering for faster results.")
                 with st.spinner("Training Random Forest..."):
@@ -756,7 +757,7 @@ elif page == "📈 Results":
                         "f1-score":"{:.2f}",
                         "support":"{:.0f}"
                     }).background_gradient(subset=["f1-score"] if "f1-score" in rep_df.columns else None, cmap="Greens")
-                    st.dataframe(styled, use_container_width=True)
+                    st.dataframe(rep_df[cols_order], use_container_width=True)
                 except Exception as e:
                     st.text(classification_report(y_test,y_pred))
             else:
@@ -825,6 +826,22 @@ elif page == "📈 Results":
 elif page == "🌿 Insights":
     st.title("🌿 Soil Health Insights & Crop Recommendations")
     st.markdown("Automated soil health recommendations based on model outputs, clustering, and crop suitability matching.")
+    # --- Legend for suitability colors ---
+    st.markdown("### 🗺️ Suitability Color Legend")
+    st.markdown("""
+    <style>
+    .legend-row { font-size: 17px; margin-bottom: 4px; }
+    </style>
+    <div class="legend-row"><span style='color:#2ecc71;font-size:18px'>🟢 Green</span>: <b>Good/Sustainable</b> &mdash; Soil is ideal for cropping.<br>
+    <b>Recommended crops:</b> Rice, Corn, Cassava, Vegetables, Banana, Coconut.</div>
+    <div class="legend-row"><span style='color:#f39c12;font-size:18px'>🟠 Orange</span>: <b>Moderate</b> &mdash; Moderately suitable soil.<br>
+    <b>Actions:</b> Nutrient adjustment needed.<br>
+    <b>Crops:</b> Corn, Cassava, selected vegetables.</div>
+    <div class="legend-row"><span style='color:#e74c3c;font-size:18px'>🔴 Red</span>: <b>Poor/Unsuitable</b> &mdash; Not recommended for cropping.<br>
+    <b>Actions:</b> Major improvement needed.<br>
+    <b>Crops:</b> Only very hardy types after soil amendment.</div>
+    """, unsafe_allow_html=True)
+
     if st.session_state["df"] is None:
         st.info("Upload and preprocess a dataset first (Home).")
     else:
@@ -842,7 +859,19 @@ elif page == "🌿 Insights":
             s = recommend_crops_for_sample(row, top_n=3)
             return ", ".join([f"{c} ({score:.2f})" for c, score in s])
         preview['top_crops'] = preview.apply(lambda r: _rec_small(r), axis=1)
-        st.dataframe(preview.head(20), use_container_width=True)
+        def agriculture_verdict(row):
+            score = row['suitability_score']
+            label, hex_color = suitability_color(score)
+            crops = recommend_crops_for_sample(row, top_n=3)
+            if label == "Green":
+                verdict = f"🟢 Soil is sustainable for cropping. Ideal crops: {', '.join([c[0] for c in crops])}."
+            elif label == "Orange":
+                verdict = f"🟠 Soil is moderately suitable. Consider minor fertilizer or pH adjustment. Crops that may grow: {', '.join([c[0] for c in crops])}."
+            else:
+                verdict = f"🔴 Soil is NOT recommended for cropping without amendments. Major improvement needed. Possible crops (with treatment): {', '.join([c[0] for c in crops])}."
+            return verdict
+        preview['verdict'] = preview.apply(agriculture_verdict, axis=1)
+        st.dataframe(preview[['pH', 'Nitrogen', 'Phosphorus', 'Potassium', 'Moisture', 'Organic Matter', 'suitability_score', 'suitability_label', 'top_crops', 'verdict']], use_container_width=True)
         if 'Latitude' in df.columns and 'Longitude' in df.columns:
             st.markdown("**Map: colored by suitability**")
             map_df = preview[['Latitude','Longitude','suitability_score','suitability_label']].dropna()
@@ -874,6 +903,12 @@ elif page == "🌿 Insights":
                 label, hexc = suitability_color(med_score)
                 med_row = med_series.copy()
                 crop_recs = recommend_crops_for_sample(med_row, top_n=4)
+                if label == "Green":
+                    cluster_verdict = f"🟢 Cluster {cl}: Sustainable! Recommended crops: {', '.join([c[0] for c in crop_recs])}"
+                elif label == "Orange":
+                    cluster_verdict = f"🟠 Cluster {cl}: Moderate. Consider minor amendments. Crops: {', '.join([c[0] for c in crop_recs])}"
+                else:
+                    cluster_verdict = f"🔴 Cluster {cl}: Poor. Major improvement needed. Crops: {', '.join([c[0] for c in crop_recs]) if crop_recs else 'None'}"
                 cluster_summaries.append({
                     "cluster": int(cl),
                     "size": int(sub.shape[0]),
@@ -881,11 +916,13 @@ elif page == "🌿 Insights":
                     "suitability_score": float(med_score),
                     "suitability_label": label,
                     "suitability_hex": hexc,
-                    "top_crops": crop_recs
+                    "top_crops": crop_recs,
+                    "verdict": cluster_verdict
                 })
             for csum in cluster_summaries:
                 st.markdown(f"### Cluster {csum['cluster']} — size: {csum['size']}")
-                st.markdown(f"- Suitability: **{csum['suitability_label']}** ({csum['suitability_score']:.2f})")
+                st.markdown(f"- Suitability: <span style='color:{csum['suitability_hex']};font-weight:700'>{csum['suitability_label']}</span> ({csum['suitability_score']:.2f})", unsafe_allow_html=True)
+                st.markdown(f"- Verdict: {csum['verdict']}")
                 st.markdown("- Median values:")
                 for kf, kv in csum['median_values'].items():
                     st.markdown(f"  - {kf}: {kv:.3f}")
