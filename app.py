@@ -1069,33 +1069,43 @@ elif page == "📊 Visualization":
                 st.plotly_chart(fig, use_container_width=True)
                 st.markdown("---")
 
+        # === Improved Correlation Matrix (hide tiny numbers, drop location cols) ===
         st.subheader("Correlation Matrix")
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        if numeric_cols:
-            corr = df[numeric_cols].corr()
+        drop_for_corr = ["Latitude", "Longitude", "sample_depth_cm"]
+        corr_cols = [c for c in numeric_cols if c not in drop_for_corr]
+        if len(corr_cols) >= 2:
+            corr = df[corr_cols].corr()
             corr = corr.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+            corr_rounded = corr.round(2)
+            text = corr_rounded.astype(str)
+            mask_small = corr.abs() < 0.15
+            text = text.mask(mask_small, "")
+
             fig_corr = px.imshow(
                 corr,
-                text_auto=".2f",
+                text=text,
                 color_continuous_scale=px.colors.sequential.Viridis,
+                zmin=-1,
+                zmax=1,
                 title="Correlation Heatmap",
             )
             fig_corr.update_traces(
-                texttemplate="%{z:.2f}",
-                textfont=dict(color="white", size=10),
+                texttemplate="%{text}",
+                textfont=dict(color="white", size=11),
             )
             fig_corr.update_layout(template="plotly_dark")
             st.plotly_chart(fig_corr, use_container_width=True)
         else:
-            st.info("No numeric columns available for correlation matrix.")
+            st.info("Not enough numeric columns for a correlation matrix.")
         st.markdown("---")
 
-        # === Location map using Latitude/Longitude/Province, auto-focused on data in PH ===
+        # === Better Location map using Mapbox (OpenStreetMap), with province filter ===
         if "Latitude" in df.columns and "Longitude" in df.columns:
-            st.subheader("🗺️ Location map of soil samples (auto-zoom on PH data)")
+            st.subheader("🗺️ Location map of soil samples (Philippines)")
             loc_df = df.dropna(subset=["Latitude", "Longitude"]).copy()
             if not loc_df.empty:
-                # Basic sanity filter: keep only plausible PH lat/lon
                 loc_df = loc_df[
                     (loc_df["Latitude"].between(4, 22))
                     & (loc_df["Longitude"].between(116, 127))
@@ -1111,6 +1121,16 @@ elif page == "📊 Visualization":
                         if "Province" in loc_df.columns
                         else ("province" if "province" in loc_df.columns else None)
                     )
+
+                    if prov_col is not None:
+                        provinces = sorted(loc_df[prov_col].dropna().unique().tolist())
+                        selected_prov = st.multiselect(
+                            "Filter by province (optional)",
+                            options=provinces,
+                            default=provinces,
+                        )
+                        if selected_prov:
+                            loc_df = loc_df[loc_df[prov_col].isin(selected_prov)]
 
                     color_col = None
                     if "Fertility_Level" in loc_df.columns:
@@ -1135,44 +1155,41 @@ elif page == "📊 Visualization":
                         if col in loc_df.columns and col not in hover_cols:
                             hover_cols.append(col)
 
-                    lat_min = float(loc_df["Latitude"].min())
-                    lat_max = float(loc_df["Latitude"].max())
-                    lon_min = float(loc_df["Longitude"].min())
-                    lon_max = float(loc_df["Longitude"].max())
-                    lat_center = (lat_min + lat_max) / 2.0
-                    lon_center = (lon_min + lon_max) / 2.0
+                    lat_center = float(loc_df["Latitude"].mean())
+                    lon_center = float(loc_df["Longitude"].mean())
 
                     if color_col:
-                        fig_geo = px.scatter_geo(
+                        fig_geo = px.scatter_mapbox(
                             loc_df,
                             lat="Latitude",
                             lon="Longitude",
                             color=color_col,
                             hover_name=prov_col if prov_col else None,
                             hover_data=hover_cols,
+                            zoom=5.5,
+                            center={"lat": lat_center, "lon": lon_center},
                             title="Soil sample locations by fertility/province (Philippines)",
                         )
                     else:
-                        fig_geo = px.scatter_geo(
+                        fig_geo = px.scatter_mapbox(
                             loc_df,
                             lat="Latitude",
                             lon="Longitude",
                             hover_data=hover_cols,
+                            zoom=5.5,
+                            center={"lat": lat_center, "lon": lon_center},
                             title="Soil sample locations (Philippines)",
                         )
 
-                    fig_geo.update_geos(
-                        scope="asia",
-                        center=dict(lat=lat_center, lon=lon_center),
-                        lataxis_range=[lat_min - 0.5, lat_max + 0.5],
-                        lonaxis_range=[lon_min - 0.5, lon_max + 0.5],
-                        showcoastlines=True,
-                        showcountries=True,
-                        countrycolor="white",
-                        coastlinecolor="white",
-                        projection_type="mercator",
+                    fig_geo.update_traces(
+                        marker=dict(size=7, opacity=0.75),
                     )
-                    fig_geo.update_layout(template="plotly_dark", height=500)
+                    fig_geo.update_layout(
+                        mapbox_style="open-street-map",
+                        margin={"r": 0, "t": 40, "l": 0, "b": 0},
+                        height=520,
+                        template="plotly_dark",
+                    )
                     st.plotly_chart(fig_geo, use_container_width=True)
             else:
                 st.info(
