@@ -208,7 +208,6 @@ page = (
 )
 
 # === COLUMN MAPPING & BASE HELPERS ===
-# Robust standardization for many header variants (case-insensitive, spaces, underscores, etc.)
 column_mapping = {
     "pH": [
         "pH",
@@ -294,12 +293,6 @@ required_columns = [
 
 
 def normalize_col_name(name: str) -> str:
-    """
-    Normalize column names:
-    - lowercase
-    - remove non-alphanumeric
-    - remove trailing digits (e.g., longitude_1 -> longitude)
-    """
     s = re.sub(r"[^a-z0-9]", "", str(name).lower())
     s = re.sub(r"\d+$", "", s)
     return s
@@ -430,6 +423,7 @@ def recommend_crops_for_sample(sample_series: pd.Series, top_n=3):
     for crop, profile in CROP_PROFILES.items():
         s = crop_match_score(sample, profile)
         scored.append((crop, s))
+        # scored list collects (crop, score)
     scored.sort(key=lambda x: x[1], reverse=True)
     return scored[:top_n]
 
@@ -643,7 +637,6 @@ def upload_and_preprocess_widget():
                     st.warning(f"{file.name} has too few columns for analysis.")
                     continue
 
-                # --- robust column standardization ---
                 col_norm_map = {
                     normalize_col_name(c): c for c in df_file.columns
                 }
@@ -911,7 +904,6 @@ elif page == "🤖 Modeling":
         )
         st.markdown("---")
 
-        # Target setup
         if st.session_state["task_mode"] == "Classification":
             if "Fertility_Level" not in df.columns and "Nitrogen" in df.columns:
                 df["Fertility_Level"] = create_fertility_label(df, col="Nitrogen", q=3)
@@ -1099,9 +1091,9 @@ elif page == "📊 Visualization":
             st.info("No numeric columns available for correlation matrix.")
         st.markdown("---")
 
-        # === NEW: Location map using Latitude/Longitude/Province ===
+        # === Location map using Latitude/Longitude/Province (focused on Philippines) ===
         if "Latitude" in df.columns and "Longitude" in df.columns:
-            st.subheader("🗺️ Location map of soil samples")
+            st.subheader("🗺️ Location map of soil samples (Philippines)")
             loc_df = df.dropna(subset=["Latitude", "Longitude"]).copy()
             if not loc_df.empty:
                 prov_col = (
@@ -1141,7 +1133,7 @@ elif page == "📊 Visualization":
                         color=color_col,
                         hover_name=prov_col if prov_col else None,
                         hover_data=hover_cols,
-                        title="Soil sample locations by fertility/province",
+                        title="Soil sample locations by fertility/province (Philippines)",
                     )
                 else:
                     fig_geo = px.scatter_geo(
@@ -1149,8 +1141,20 @@ elif page == "📊 Visualization":
                         lat="Latitude",
                         lon="Longitude",
                         hover_data=hover_cols,
-                        title="Soil sample locations",
+                        title="Soil sample locations (Philippines)",
                     )
+
+                fig_geo.update_geos(
+                    scope="asia",
+                    center=dict(lat=12.8797, lon=121.7740),
+                    lataxis_range=[4, 21],
+                    lonaxis_range=[116, 127],
+                    showcoastlines=True,
+                    showcountries=True,
+                    countrycolor="white",
+                    coastlinecolor="white",
+                    projection_scale=6,
+                )
                 fig_geo.update_layout(template="plotly_dark", height=500)
                 st.plotly_chart(fig_geo, use_container_width=True)
             else:
@@ -1319,7 +1323,6 @@ elif page == "📈 Results":
 
         st.markdown("---")
 
-        # === Random Forest Feature Importance & Permutation Importance ===
         st.subheader("🌳 Random Forest Feature Importance")
         feat_names = results.get("X_columns", [])
         fi_list = results.get("feature_importances", [])
@@ -1369,7 +1372,6 @@ elif page == "📈 Results":
 
         st.markdown("---")
 
-        # === Prediction Explorer ===
         st.subheader("🔍 Prediction Explorer — Soil Health from Custom Sample")
         model = st.session_state.get("model")
         scaler = st.session_state.get("scaler")
@@ -1491,7 +1493,6 @@ elif page == "🌿 Insights":
             else "this dataset"
         )
 
-        # Overall soil health evaluation using median sample
         if all(f in df.columns for f in features):
             median_row = df[features].median()
             overall_score = compute_suitability_score(median_row, features=features)
@@ -1560,7 +1561,6 @@ elif page == "🌿 Insights":
         st.write(f"Samples: {df.shape[0]}  — Columns: {df.shape[1]}")
         st.markdown("---")
 
-        # Sample-level suitability & recommendations
         st.subheader("Sample-level suitability & agriculture validation")
 
         display_cols = [
@@ -1666,7 +1666,6 @@ elif page == "🌿 Insights":
         )
         st.markdown("---")
 
-        # === NEW: Per-province soil health summary (uses Province + suitability) ===
         if "Province" in preview.columns:
             st.subheader("Per-province soil health summary")
             prov_summary = (
@@ -1735,7 +1734,6 @@ elif page == "🌿 Insights":
 
         st.markdown("---")
 
-        # Detailed crop evaluation (Crop Suitability Scope)
         st.subheader("Detailed crop evaluation for a specific soil sample")
         if df.shape[0] > 0:
             idx = st.number_input(
@@ -1758,7 +1756,6 @@ elif page == "🌿 Insights":
 
         st.markdown("---")
 
-        # K-Means Clustering for pattern discovery
         st.subheader("Soil pattern clustering (K-Means)")
         cluster_features = [f for f in features if f in df.columns]
         if len(cluster_features) < 2:
