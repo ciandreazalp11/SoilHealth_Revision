@@ -24,6 +24,7 @@ from PIL import Image
 import io as sysio
 import os
 import warnings
+import re  # for robust column name normalization
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -207,15 +208,74 @@ page = (
 )
 
 # === COLUMN MAPPING & BASE HELPERS ===
+# Robust standardization for many header variants (case-insensitive, spaces, underscores, etc.)
 column_mapping = {
-    "pH": ["pH", "ph", "Soil_pH"],
-    "Nitrogen": ["Nitrogen", "N", "Nitrogen_Level"],
-    "Phosphorus": ["Phosphorus", "P"],
-    "Potassium": ["Potassium", "K"],
-    "Moisture": ["Moisture", "Soil_Moisture"],
-    "Organic Matter": ["Organic Matter", "OrganicMatter", "OM", "oc"],
-    "Latitude": ["Latitude", "Lat", "lat"],
-    "Longitude": ["Longitude", "Lon", "Lng", "lon", "lng"],
+    "pH": [
+        "pH",
+        "ph",
+        "soil_pH",
+        "soil ph",
+        "soilph",
+    ],
+    "Nitrogen": [
+        "Nitrogen",
+        "nitrogen",
+        "n",
+        "nitrogen_level",
+        "total_nitrogen",
+    ],
+    "Phosphorus": [
+        "Phosphorus",
+        "phosphorus",
+        "p",
+        "p2o5",
+    ],
+    "Potassium": [
+        "Potassium",
+        "potassium",
+        "k",
+        "k2o",
+    ],
+    "Moisture": [
+        "Moisture",
+        "moisture",
+        "soil_moisture",
+        "moisture_index",
+        "moisture content",
+        "moisturecontent",
+    ],
+    "Organic Matter": [
+        "Organic Matter",
+        "organic matter",
+        "organic_matter",
+        "organicmatter",
+        "om",
+        "oc",
+        "orgmatter",
+        "organic carbon",
+        "organic_carbon",
+        "organiccarbon",
+    ],
+    "Latitude": [
+        "Latitude",
+        "latitude",
+        "lat",
+    ],
+    "Longitude": [
+        "Longitude",
+        "longitude",
+        "lon",
+        "lng",
+        "longitude_1",
+        "longitude_2",
+    ],
+    "Fertility_Level": [
+        "Fertility_Level",
+        "fertility_level",
+        "fertility class",
+        "fertility_class",
+        "fertilityclass",
+    ],
 }
 
 required_columns = [
@@ -226,6 +286,18 @@ required_columns = [
     "Moisture",
     "Organic Matter",
 ]
+
+
+def normalize_col_name(name: str) -> str:
+    """
+    Normalize column names:
+    - lowercase
+    - remove non-alphanumeric
+    - remove trailing digits (e.g., longitude_1 -> longitude)
+    """
+    s = re.sub(r"[^a-z0-9]", "", str(name).lower())
+    s = re.sub(r"\d+$", "", s)
+    return s
 
 
 def safe_to_numeric_columns(df, cols):
@@ -357,9 +429,8 @@ def recommend_crops_for_sample(sample_series: pd.Series, top_n=3):
     return scored[:top_n]
 
 
-# === NEW: DETAILED CROP EVALUATION HELPERS ===
+# === DETAILED CROP EVALUATION HELPERS ===
 def evaluate_crop_nutrient_gaps(sample: dict, crop_profile: dict):
-    """Return list of nutrient issues for a given sample vs. a crop requirement."""
     issues = []
     for param, (low, high) in crop_profile.items():
         val = sample.get(param, np.nan)
@@ -374,7 +445,6 @@ def evaluate_crop_nutrient_gaps(sample: dict, crop_profile: dict):
 
 
 def build_crop_evaluation_table(sample_series: pd.Series, top_n: int = 6) -> pd.DataFrame:
-    """Build a detailed crop evaluation table for one soil sample."""
     sample = sample_series.to_dict()
     rows = []
     for crop, profile in CROP_PROFILES.items():
@@ -412,7 +482,7 @@ def build_crop_evaluation_table(sample_series: pd.Series, top_n: int = 6) -> pd.
     return df_eval
 
 
-# === NEW: IMPROVED SUITABILITY SCORE (unchanged core, just refactor friendly) ===
+# === SUITABILITY SCORE ===
 def compute_suitability_score(row, features=None):
     if features is None:
         features = [
@@ -488,7 +558,7 @@ def suitability_color(score):
     return ("Red", "#e74c3c")
 
 
-# === NEW: CLIP SOIL RANGES FOR BETTER PREPROCESSING ===
+# === CLIP SOIL RANGES FOR BETTER PREPROCESSING ===
 def clip_soil_ranges(df: pd.DataFrame) -> pd.DataFrame:
     if "pH" in df.columns:
         df["pH"] = df["pH"].clip(3.5, 9.0)
@@ -505,7 +575,7 @@ def clip_soil_ranges(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# === NEW: K-MEANS HELPER ===
+# === K-MEANS HELPER ===
 def run_kmeans_on_df(
     df: pd.DataFrame, features: list, n_clusters: int = 3
 ):
@@ -569,26 +639,45 @@ def upload_and_preprocess_widget():
                     st.warning(f"{file.name} has too few columns for analysis.")
                     continue
 
+                # --- robust column standardization ---
+                col_norm_map = {
+                    normalize_col_name(c): c for c in df_file.columns
+                }
+
                 renamed = {}
                 for std_col, alt_names in column_mapping.items():
-                    for alt in alt_names:
-                        if alt in df_file.columns:
-                            renamed[alt] = std_col
+                    candidates = [std_col] + alt_names
+                    for cand in candidates:
+                        norm_cand = normalize_col_name(cand)
+                        if norm_cand in col_norm_map:
+                            src_col = col_norm_map[norm_cand]
+                            renamed[src_col] = std_col
                             break
-                df_file.rename(columns=renamed, inplace=True)
 
-                cols_to_keep = [
+                if renamed:
+                    df_file.rename(columns=renamed, inplace=True)
+
+                numeric_core_cols = [
                     col
                     for col in required_columns + ["Latitude", "Longitude"]
                     if col in df_file.columns
                 ]
-                df_file = df_file[cols_to_keep]
+                safe_to_numeric_columns(df_file, numeric_core_cols)
 
-                safe_to_numeric_columns(df_file, cols_to_keep)
                 df_file.drop_duplicates(inplace=True)
                 cleaned_dfs.append(df_file)
+
+                recognized = [
+                    c
+                    for c in required_columns
+                    + ["Latitude", "Longitude", "Fertility_Level"]
+                    if c in df_file.columns
+                ]
+                recog_text = (
+                    ", ".join(recognized) if recognized else "no core soil features"
+                )
                 st.success(
-                    f"✅ Cleaned {file.name} — kept: {', '.join(cols_to_keep)} "
+                    f"✅ Cleaned {file.name} — recognized: {recog_text} "
                     f"({df_file.shape[0]} rows)"
                 )
             except Exception as e:
@@ -627,7 +716,10 @@ def upload_and_preprocess_widget():
 
             # Ensure fertility classes exist using Nitrogen distribution (Low/Moderate/High)
             if "Nitrogen" in df.columns:
-                df["Fertility_Level"] = create_fertility_label(df, col="Nitrogen", q=3)
+                if "Fertility_Level" not in df.columns or df["Fertility_Level"].nunique() < 2:
+                    df["Fertility_Level"] = create_fertility_label(
+                        df, col="Nitrogen", q=3
+                    )
 
             st.session_state["df"] = df
             st.success("✨ Dataset preprocessed and stored in session.")
@@ -666,7 +758,7 @@ def render_profile(name, asset_filename):
         width: 170px; height: 170px;
         border-radius: 50%;
         background: conic-gradient(from 180deg at 50% 50%, #00ffd0, #fff700, #ff00d4, #00ffd0 100%);
-        padding: 6px; /* border size */
+        padding: 6px;
         box-shadow: 0 0 19px 2px #00ffd088, 0 0 36px 11px #ff00d455;
         position: relative;
         margin-bottom: 18px;
@@ -819,14 +911,8 @@ elif page == "🤖 Modeling":
 
         # Target setup
         if st.session_state["task_mode"] == "Classification":
-            if "Nitrogen" in df.columns:
-                df["Fertility_Level"] = df.get("Fertility_Level") or create_fertility_label(
-                    df, col="Nitrogen", q=3
-                )
-                # Ensure fertility label exists with 3 classes
-                df["Fertility_Level"] = create_fertility_label(
-                    df, col="Nitrogen", q=3
-                )
+            if "Fertility_Level" not in df.columns and "Nitrogen" in df.columns:
+                df["Fertility_Level"] = create_fertility_label(df, col="Nitrogen", q=3)
             y = df["Fertility_Level"] if "Fertility_Level" in df.columns else None
         else:
             y = df["Nitrogen"] if "Nitrogen" in df.columns else None
@@ -1212,7 +1298,6 @@ elif page == "📈 Results":
         else:
             st.info("Permutation importance not computed or unavailable.")
 
-        # Short explanation of top drivers
         if fi_list and feat_names:
             fi_pairs = list(zip(feat_names, fi_list))
             fi_pairs.sort(key=lambda x: x[1], reverse=True)
@@ -1335,7 +1420,6 @@ elif page == "🌿 Insights":
             "Organic Matter",
         ]
 
-        # Location context input (tag only; does not change data)
         st.session_state["location_tag"] = st.text_input(
             "Optional location / farm name (for context in reports)",
             value=st.session_state.get("location_tag", ""),
@@ -1404,7 +1488,7 @@ elif page == "🌿 Insights":
                 </div>
                 <div style='font-size:16px;padding-top:8px;'>
                     <b>Recommended crops (overall suitability):</b> 
-                    <span style='color:{color_hex};font-weight:700'>{crop_list}</span>
+                    <span style='color:{color_hex};font-weight:700}'>{crop_list}</span>
                 </div>
             </div>
             """,
@@ -1488,7 +1572,6 @@ elif page == "🌿 Insights":
 
         preview["verdict"] = preview.apply(agriculture_verdict, axis=1)
 
-        # Aggregated agriculture validation counts
         col_g, col_o, col_r = st.columns(3)
         for label_name, col_obj in zip(
             ["Green", "Orange", "Red"], [col_g, col_o, col_r]
@@ -1558,7 +1641,7 @@ elif page == "🌿 Insights":
 
         st.markdown("---")
 
-        # === Detailed crop evaluation (Crop Suitability Scope) ===
+        # Detailed crop evaluation (Crop Suitability Scope)
         st.subheader("Detailed crop evaluation for a specific soil sample")
         if df.shape[0] > 0:
             idx = st.number_input(
@@ -1581,7 +1664,7 @@ elif page == "🌿 Insights":
 
         st.markdown("---")
 
-        # === K-Means Clustering for pattern discovery ===
+        # K-Means Clustering for pattern discovery
         st.subheader("Soil pattern clustering (K-Means)")
         cluster_features = [f for f in features if f in df.columns]
         if len(cluster_features) < 2:
@@ -1603,7 +1686,6 @@ elif page == "🌿 Insights":
                 st.write("Cluster sizes:")
                 st.write(counts)
 
-                # Use first two features for visualization
                 x_feat = cluster_features[0]
                 y_feat = cluster_features[1]
                 fig_cluster = px.scatter(
