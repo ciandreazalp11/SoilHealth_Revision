@@ -24,7 +24,7 @@ from PIL import Image
 import io as sysio
 import os
 import warnings
-import re  # for robust column name normalization
+import re  # robust column name normalization
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -275,6 +275,11 @@ column_mapping = {
         "fertility class",
         "fertility_class",
         "fertilityclass",
+    ],
+    "Province": [
+        "Province",
+        "province",
+        "prov",
     ],
 }
 
@@ -584,7 +589,6 @@ def run_kmeans_on_df(
         return None, None
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(sub)
-    # Explicit n_init for stability
     model = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     labels = model.fit_predict(X_scaled)
     sub["cluster"] = labels
@@ -670,7 +674,7 @@ def upload_and_preprocess_widget():
                 recognized = [
                     c
                     for c in required_columns
-                    + ["Latitude", "Longitude", "Fertility_Level"]
+                    + ["Latitude", "Longitude", "Fertility_Level", "Province"]
                     if c in df_file.columns
                 ]
                 recog_text = (
@@ -706,7 +710,6 @@ def upload_and_preprocess_widget():
 
             df.dropna(how="all", inplace=True)
 
-            # Clip to reasonable ranges for more robust modeling
             df = clip_soil_ranges(df)
 
             missing_required = [col for col in required_columns if col not in df.columns]
@@ -714,7 +717,6 @@ def upload_and_preprocess_widget():
                 st.error(f"Some required columns missing: {missing_required}")
                 return
 
-            # Ensure fertility classes exist using Nitrogen distribution (Low/Moderate/High)
             if "Nitrogen" in df.columns:
                 if "Fertility_Level" not in df.columns or df["Fertility_Level"].nunique() < 2:
                     df["Fertility_Level"] = create_fertility_label(
@@ -1036,7 +1038,7 @@ elif page == "🤖 Modeling":
 elif page == "📊 Visualization":
     st.title("📊 Data Visualization")
     st.markdown(
-        "Explore distributions, correlations, and relationships in your preprocessed data."
+        "Explore distributions, correlations, locations, and relationships in your preprocessed data."
     )
     if st.session_state["df"] is None:
         st.info("Please upload data first in 'Home' (Upload Data is integrated there).")
@@ -1096,6 +1098,65 @@ elif page == "📊 Visualization":
         else:
             st.info("No numeric columns available for correlation matrix.")
         st.markdown("---")
+
+        # === NEW: Location map using Latitude/Longitude/Province ===
+        if "Latitude" in df.columns and "Longitude" in df.columns:
+            st.subheader("🗺️ Location map of soil samples")
+            loc_df = df.dropna(subset=["Latitude", "Longitude"]).copy()
+            if not loc_df.empty:
+                prov_col = (
+                    "Province"
+                    if "Province" in loc_df.columns
+                    else ("province" if "province" in loc_df.columns else None)
+                )
+
+                color_col = None
+                if "Fertility_Level" in loc_df.columns:
+                    color_col = "Fertility_Level"
+                elif prov_col is not None:
+                    color_col = prov_col
+
+                hover_cols = []
+                if prov_col and prov_col in loc_df.columns:
+                    hover_cols.append(prov_col)
+                for col in ["soil_type"]:
+                    if col in loc_df.columns and col not in hover_cols:
+                        hover_cols.append(col)
+                for col in [
+                    "pH",
+                    "Nitrogen",
+                    "Phosphorus",
+                    "Potassium",
+                    "Moisture",
+                    "Organic Matter",
+                ]:
+                    if col in loc_df.columns and col not in hover_cols:
+                        hover_cols.append(col)
+
+                if color_col:
+                    fig_geo = px.scatter_geo(
+                        loc_df,
+                        lat="Latitude",
+                        lon="Longitude",
+                        color=color_col,
+                        hover_name=prov_col if prov_col else None,
+                        hover_data=hover_cols,
+                        title="Soil sample locations by fertility/province",
+                    )
+                else:
+                    fig_geo = px.scatter_geo(
+                        loc_df,
+                        lat="Latitude",
+                        lon="Longitude",
+                        hover_data=hover_cols,
+                        title="Soil sample locations",
+                    )
+                fig_geo.update_layout(template="plotly_dark", height=500)
+                st.plotly_chart(fig_geo, use_container_width=True)
+            else:
+                st.info(
+                    "Latitude/Longitude present but all rows are NaN; map cannot be drawn."
+                )
 
 elif page == "📈 Results":
     st.title("📈 Model Results & Interpretation")
@@ -1488,7 +1549,7 @@ elif page == "🌿 Insights":
                 </div>
                 <div style='font-size:16px;padding-top:8px;'>
                     <b>Recommended crops (overall suitability):</b> 
-                    <span style='color:{color_hex};font-weight:700}'>{crop_list}</span>
+                    <span style='color:{color_hex};font-weight:700'>{crop_list}</span>
                 </div>
             </div>
             """,
@@ -1505,6 +1566,7 @@ elif page == "🌿 Insights":
         display_cols = [
             c
             for c in [
+                "Province",
                 "pH",
                 "Nitrogen",
                 "Phosphorus",
@@ -1582,22 +1644,54 @@ elif page == "🌿 Insights":
         st.dataframe(
             preview[
                 [
-                    "pH",
-                    "Nitrogen",
-                    "Phosphorus",
-                    "Potassium",
-                    "Moisture",
-                    "Organic Matter",
-                    "Fertility_Level",
-                    "suitability_score",
-                    "suitability_label",
-                    "top_crops",
-                    "verdict",
+                    col
+                    for col in [
+                        "Province",
+                        "pH",
+                        "Nitrogen",
+                        "Phosphorus",
+                        "Potassium",
+                        "Moisture",
+                        "Organic Matter",
+                        "Fertility_Level",
+                        "suitability_score",
+                        "suitability_label",
+                        "top_crops",
+                        "verdict",
+                    ]
+                    if col in preview.columns
                 ]
             ],
             use_container_width=True,
         )
         st.markdown("---")
+
+        # === NEW: Per-province soil health summary (uses Province + suitability) ===
+        if "Province" in preview.columns:
+            st.subheader("Per-province soil health summary")
+            prov_summary = (
+                preview.groupby("Province")
+                .agg(
+                    samples=("suitability_score", "count"),
+                    avg_suitability=("suitability_score", "mean"),
+                    green_samples=(
+                        "suitability_label",
+                        lambda x: (x == "Green").sum(),
+                    ),
+                    orange_samples=(
+                        "suitability_label",
+                        lambda x: (x == "Orange").sum(),
+                    ),
+                    red_samples=(
+                        "suitability_label",
+                        lambda x: (x == "Red").sum(),
+                    ),
+                )
+                .reset_index()
+            )
+            prov_summary["avg_suitability"] = prov_summary["avg_suitability"].round(3)
+            st.dataframe(prov_summary, use_container_width=True)
+            st.markdown("---")
 
         st.markdown("### Soil Suitability Color Legend")
         st.markdown(
