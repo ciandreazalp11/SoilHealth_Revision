@@ -6,3 +6,4 @@ scikit-learn>=1.0
 joblib>=1.2
 Pillow>=8.1
 streamlit-option-menu>=0.3.6
+statsmodels
