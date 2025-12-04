@@ -108,106 +108,93 @@ if "location_tag" not in st.session_state:
     st.session_state["location_tag"] = ""
 
 # === APPLY THEME (FIXED, CLEAN, WORKING) ===
-def apply_theme(theme):
+# app.py — patched apply_theme only
+
+import streamlit as st
+from streamlit.components.v1 import html  # ensures CSS is injected, not shown
+
+def apply_theme(theme: dict) -> None:
+    # Why: components.html never “escapes” the content like Markdown might on some builds.
     css = f"""
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
     <style>
+      /* Base app structure */
+      .stApp {{
+          font-family:'Montserrat',sans-serif!important;
+          color:{theme['text_color']};
+          min-height:100vh;
+          background:{theme['background_main']};
+          background-attachment:fixed;
+          position:relative;
+          overflow:hidden;
+      }}
 
-    /* Base app structure */
-    .stApp {{
-        font-family:'Montserrat',sans-serif!important;
-        color:{theme['text_color']};
-        min-height:100vh;
-        background:{theme['background_main']};
-        background-attachment:fixed;
-        position:relative;
-        overflow:hidden;
-    }}
+      /* Typography */
+      h1,h2,h3,h4,h5,h6 {{
+          font-family:'Playfair Display',serif!important;
+          color:{theme['title_color']};
+          font-weight:700!important;
+          text-shadow:0 2px 4px rgba(255,255,255,0.6);
+          animation:floatTitle 3s ease-in-out infinite;
+      }}
 
-    /* Typography */
-    h1,h2,h3,h4,h5,h6 {{
-        font-family:'Playfair Display',serif!important;
-        color:{theme['title_color']};
-        font-weight:700!important;
-        text-shadow:0 2px 4px rgba(255,255,255,0.6);
-        animation:floatTitle 3s ease-in-out infinite;
-    }}
+      @keyframes floatTitle {{
+          0%,100% {{ transform:translateY(0); }}
+          50% {{ transform:translateY(-3px); }}
+      }}
 
-    @keyframes floatTitle {{
-        0%,100% {{ transform:translateY(0); }}
-        50% {{ transform:translateY(-3px); }}
-    }}
+      /* 🌊 3D Wave background */
+      .stApp::before,.stApp::after {{
+          content:"";
+          position:absolute; left:0; top:0;
+          width:200%; height:200%;
+          background:
+              radial-gradient(circle at 50% 50%, rgba(255,255,255,0.40) 0%, transparent 70%),
+              radial-gradient(circle at 70% 70%, rgba(255,255,255,0.30) 0%, transparent 70%),
+              radial-gradient(circle at 30% 30%, rgba(255,255,255,0.25) 0%, transparent 70%);
+          animation:waveMove 15s infinite linear;
+          opacity:.40; z-index:0; pointer-events:none;
+      }}
+      .stApp::after {{ animation-delay:-7s; opacity:.30; }}
 
-    /* 🌊 3D Wave background */
-    .stApp::before,.stApp::after {{
-        content:"";
-        position:absolute;
-        left:0; top:0;
-        width:200%; height:200%;
-        background:
-            radial-gradient(circle at 50% 50%, rgba(255,255,255,0.40) 0%, transparent 70%),
-            radial-gradient(circle at 70% 70%, rgba(255,255,255,0.30) 0%, transparent 70%),
-            radial-gradient(circle at 30% 30%, rgba(255,255,255,0.25) 0%, transparent 70%);
-        animation:waveMove 15s infinite linear;
-        opacity:.40;
-        z-index:0;
-        pointer-events:none;
-    }}
+      @keyframes waveMove {{
+          from {{ transform:translateX(0) translateY(0) rotate(0deg); }}
+          to   {{ transform:translateX(-25%) translateY(-25%) rotate(360deg); }}
+      }}
 
-    .stApp::after {{
-        animation-delay:-7s;
-        opacity:.30;
-    }}
+      /* Sidebar fix */
+      section[data-testid="stSidebar"] {{
+          position:relative!important; z-index:1!important; overflow-y:auto!important;
+          background:{theme['sidebar_bg']}!important; height:100vh!important;
+          backdrop-filter:blur(6px); border-right:1px solid rgba(255,255,255,0.25);
+      }}
+      [data-testid="stAppViewContainer"], .main {{ position:relative!important; z-index:2!important; }}
 
-    @keyframes waveMove {{
-        from {{ transform:translateX(0) translateY(0) rotate(0deg); }}
-        to   {{ transform:translateX(-25%) translateY(-25%) rotate(360deg); }}
-    }}
+      /* Glass components */
+      [data-testid="stJson"], [data-testid="stDataFrame"], .stMetric {{
+          background:rgba(255,255,255,0.40)!important;
+          border-radius:12px!important;
+          border:1px solid rgba(255,255,255,0.2)!important;
+          backdrop-filter:blur(8px)!important;
+          box-shadow:0 2px 10px rgba(0,0,0,0.05)!important;
+      }}
 
-    /* Sidebar fix */
-    section[data-testid="stSidebar"] {{
-        position:relative!important;
-        z-index:1!important;
-        overflow-y:auto!important;
-        background:{theme['sidebar_bg']}!important;
-        height:100vh!important;
-        backdrop-filter:blur(6px);
-        border-right:1px solid rgba(255,255,255,0.25);
-    }}
-
-    [data-testid="stAppViewContainer"], .main {{
-        position:relative!important;
-        z-index:2!important;
-    }}
-
-    /* Glass components */
-    [data-testid="stJson"],
-    [data-testid="stDataFrame"],
-    .stMetric {{
-        background:rgba(255,255,255,0.40)!important;
-        border-radius:12px!important;
-        border:1px solid rgba(255,255,255,0.2)!important;
-        backdrop-filter:blur(8px)!important;
-        box-shadow:0 2px 10px rgba(0,0,0,0.05)!important;
-    }}
-
-    /* Buttons styling */
-    .stButton>button,.stDownloadButton>button {{
-        background:{theme['button_gradient']}!important;
-        color:{theme['button_text']}!important;
-        border-radius:10px!important;
-        padding:0.6rem 1.2rem!important;
-        transition:.15s;
-        box-shadow:0 4px 18px rgba(0,0,0,0.15);
-    }}
-
-    .stButton>button:hover,.stDownloadButton>button:hover {{
-        transform:translateY(-1px);
-        box-shadow:0 10px 28px rgba(0,0,0,0.25);
-    }}
-
+      /* Buttons styling */
+      .stButton>button,.stDownloadButton>button {{
+          background:{theme['button_gradient']}!important;
+          color:{theme['button_text']}!important;
+          border-radius:10px!important; padding:0.6rem 1.2rem!important;
+          transition:.15s; box-shadow:0 4px 18px rgba(0,0,0,0.15);
+      }}
+      .stButton>button:hover,.stDownloadButton>button:hover {{
+          transform:translateY(-1px);
+          box-shadow:0 10px 28px rgba(0,0,0,0.25);
+      }}
     </style>
     """
+    # Inject without rendering any visible element
+    html(css, height=0)
+
 
     st.markdown(css, unsafe_allow_html=True)
     st.markdown('<div class="bg-decor"></div>', unsafe_allow_html=True)
