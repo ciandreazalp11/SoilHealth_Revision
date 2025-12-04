@@ -22,7 +22,7 @@ import time
 import base64
 from PIL import Image
 import warnings
-import re  # robust column name normalization
+import re
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -107,153 +107,111 @@ if "last_sidebar_selected" not in st.session_state:
 if "location_tag" not in st.session_state:
     st.session_state["location_tag"] = ""
 
-# === APPLY THEME (only this function should be replaced) ===
+# === APPLY THEME (FIXED, CLEAN, WORKING) ===
 def apply_theme(theme):
     css = f"""
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
     <style>
-    /* Base app structure using your theme colors */
+
+    /* Base app structure */
     .stApp {{
-      font-family: 'Montserrat', sans-serif !important;
-      color: {theme['text_color']};
-      min-height: 100vh;
-      background: {theme['background_main']};  /* reacts to Classification/Regression theme */
-      background-attachment: fixed;
-      position: relative;
-      overflow: hidden;
+        font-family:'Montserrat',sans-serif!important;
+        color:{theme['text_color']};
+        min-height:100vh;
+        background:{theme['background_main']};
+        background-attachment:fixed;
+        position:relative;
+        overflow:hidden;
     }}
 
-    html, body, .stApp, .markdown-text-container, [data-testid="stMarkdownContainer"] {{
-      font-size: 17px !important;
-      line-height: 1.58em !important;
-    }}
-
-    h1, h2, h3, h4, h5, h6 {{
-      font-family: 'Playfair Display', serif !important;
-      color: {theme['title_color']};
-      font-weight: 700 !important;
-      margin-bottom: 0.7em !important;
-      text-shadow: 0 2px 4px rgba(255,255,255,0.6);
-      animation: floatTitle 3s ease-in-out infinite;
+    /* Typography */
+    h1,h2,h3,h4,h5,h6 {{
+        font-family:'Playfair Display',serif!important;
+        color:{theme['title_color']};
+        font-weight:700!important;
+        text-shadow:0 2px 4px rgba(255,255,255,0.6);
+        animation:floatTitle 3s ease-in-out infinite;
     }}
 
     @keyframes floatTitle {{
-      0%, 100% {{ transform: translateY(0px); }}
-      50% {{ transform: translateY(-3px); }}
+        0%,100% {{ transform:translateY(0); }}
+        50% {{ transform:translateY(-3px); }}
     }}
 
-    .block-container {{
-      padding-top: 1.5rem !important;
-      padding-bottom: 1.5rem !important;
-      max-width: 1200px !important;
-      margin-left: auto !important;
-      margin-right: auto !important;
-    }}
-
-    .stButton>button, .stDownloadButton>button {{
-      font-size: 17px !important;
-      padding: 0.6rem 1.2rem !important;
-      border-radius: 10px !important;
-      background: {theme['button_gradient']};
-      color: {theme['button_text']} !important;
-      transition: transform .12s ease, box-shadow .12s ease;
-      box-shadow: 0 4px 18px rgba(0,0,0,0.15);
-    }}
-
-    .stButton>button:hover, .stDownloadButton>button:hover {{
-      transform: translateY(-1px);
-      box-shadow: 0 10px 28px rgba(0,0,0,0.25);
-    }}
-
-    .stDataFrame, .dataframe, .stTable, .stTable-container {{
-      font-size: 16px !important;
-    }}
-
-    /* 🌊 3D animated pastel water background (your reference style) */
-    .stApp::before, .stApp::after {{
-        content: "";
-        position: absolute;
-        left: 0;
-        top: 0;
-        width: 200%;
-        height: 200%;
+    /* 🌊 3D Wave background */
+    .stApp::before,.stApp::after {{
+        content:"";
+        position:absolute;
+        left:0; top:0;
+        width:200%; height:200%;
         background:
-          radial-gradient(circle at 50% 50%, rgba(255,255,255,0.4) 0%, transparent 70%),
-          radial-gradient(circle at 70% 70%, rgba(255,255,255,0.3) 0%, transparent 70%),
-          radial-gradient(circle at 30% 30%, rgba(255,255,255,0.25) 0%, transparent 70%);
-        animation: waveMove 15s infinite linear;
-        opacity: 0.4;
-        z-index: 0;
-        pointer-events: none;  /* never blocks clicks */
+            radial-gradient(circle at 50% 50%, rgba(255,255,255,0.40) 0%, transparent 70%),
+            radial-gradient(circle at 70% 70%, rgba(255,255,255,0.30) 0%, transparent 70%),
+            radial-gradient(circle at 30% 30%, rgba(255,255,255,0.25) 0%, transparent 70%);
+        animation:waveMove 15s infinite linear;
+        opacity:.40;
+        z-index:0;
+        pointer-events:none;
     }}
 
     .stApp::after {{
-        animation-delay: -7s;
-        opacity: 0.3;
+        animation-delay:-7s;
+        opacity:.30;
     }}
 
     @keyframes waveMove {{
-        from {{ transform: translateX(0) translateY(0) rotate(0deg); }}
-        to   {{ transform: translateX(-25%) translateY(-25%) rotate(360deg); }}
+        from {{ transform:translateX(0) translateY(0) rotate(0deg); }}
+        to   {{ transform:translateX(-25%) translateY(-25%) rotate(360deg); }}
     }}
 
-    /* 🧩 Sidebar layering using your theme sidebar color */
+    /* Sidebar fix */
     section[data-testid="stSidebar"] {{
-        position: relative !important;
-        z-index: 1 !important;
-        overflow-y: auto !important;
-        background: {theme['sidebar_bg']} !important;
-        backdrop-filter: blur(6px);
-        height: 100vh !important;
-        border-right: 1px solid rgba(255, 255, 255, 0.25);
+        position:relative!important;
+        z-index:1!important;
+        overflow-y:auto!important;
+        background:{theme['sidebar_bg']}!important;
+        height:100vh!important;
+        backdrop-filter:blur(6px);
+        border-right:1px solid rgba(255,255,255,0.25);
     }}
 
-    [data-testid="stAppViewContainer"],
-    .main {{
-        position: relative !important;
-        z-index: 2 !important;   /* main content sits above waves & sidebar */
+    [data-testid="stAppViewContainer"], .main {{
+        position:relative!important;
+        z-index:2!important;
     }}
 
-    .stApp::before,
-    .stApp::after {{
-        z-index: 0 !important;   /* waves always at the back */
+    /* Glass components */
+    [data-testid="stJson"],
+    [data-testid="stDataFrame"],
+    .stMetric {{
+        background:rgba(255,255,255,0.40)!important;
+        border-radius:12px!important;
+        border:1px solid rgba(255,255,255,0.2)!important;
+        backdrop-filter:blur(8px)!important;
+        box-shadow:0 2px 10px rgba(0,0,0,0.05)!important;
     }}
 
-    /* Glassy translucent boxes */
-    [data-testid="stJson"] {{
-        background: rgba(240, 248, 255, 0.35) !important;
-        backdrop-filter: blur(10px);
-        border-radius: 15px;
-        border: 1px solid rgba(255, 255, 255, 0.3);
-        color: {theme['primary_color']} !important;
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+    /* Buttons styling */
+    .stButton>button,.stDownloadButton>button {{
+        background:{theme['button_gradient']}!important;
+        color:{theme['button_text']}!important;
+        border-radius:10px!important;
+        padding:0.6rem 1.2rem!important;
+        transition:.15s;
+        box-shadow:0 4px 18px rgba(0,0,0,0.15);
     }}
 
-    [data-testid="stDataFrame"], .stMetric {{
-        background: rgba(255, 255, 255, 0.4) !important;
-        backdrop-filter: blur(8px);
-        border-radius: 12px;
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+    .stButton>button:hover,.stDownloadButton>button:hover {{
+        transform:translateY(-1px);
+        box-shadow:0 10px 28px rgba(0,0,0,0.25);
     }}
 
-    /* Buttons hover shimmer for radio labels etc. */
-    button, .stRadio label:hover {{
-        background: linear-gradient(120deg, #b3e5fc, #81d4fa);
-        color: #01579b !important;
-        border-radius: 10px;
-        transition: 0.3s;
-    }}
-
-    /* Respect reduced motion preference */
-    @media (prefers-reduced-motion: reduce) {{
-      .stApp::before, .stApp::after {{ animation: none !important; }}
-      h1, h2, h3 {{ animation: none !important; }}
-    }}
     </style>
     """
+
     st.markdown(css, unsafe_allow_html=True)
     st.markdown('<div class="bg-decor"></div>', unsafe_allow_html=True)
+
 
 
 
