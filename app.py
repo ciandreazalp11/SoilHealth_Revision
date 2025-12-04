@@ -234,6 +234,7 @@ def apply_theme(theme):
 
 
 
+
 apply_theme(st.session_state["current_theme"])
 
 # === SIDEBAR (UNCHANGED LAYOUT) ===
