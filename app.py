@@ -1,4 +1,3 @@
-# file: app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -33,7 +32,7 @@ st.set_page_config(
     page_icon="🌿",
 )
 
-# Theme definitions (unchanged)
+# === THEMES (UNCHANGED) ===
 theme_classification = {
     "background_main": "linear-gradient(120deg, #0f2c2c 0%, #1a4141 40%, #0e2a2a 100%)",
     "sidebar_bg": "rgba(15, 30, 30, 0.95)",
@@ -82,162 +81,144 @@ theme_sakura = {
     "title_color": "#ffd6e0",
 }
 
-# Session state (unchanged)
+# === SESSION STATE ===
 if "current_theme" not in st.session_state:
     st.session_state["current_theme"] = theme_classification
-if "task_mode" not in st.session_state:
-    st.session_state["task_mode"] = "Classification"
-if "uploaded_files" not in st.session_state:
-    st.session_state["uploaded_files"] = []
 if "df" not in st.session_state:
     st.session_state["df"] = None
+if "results" not in st.session_state:
+    st.session_state["results"] = None
+if "model" not in st.session_state:
+    st.session_state["model"] = None
+if "scaler" not in st.session_state:
+    st.session_state["scaler"] = None
+if "task_mode" not in st.session_state:
+    st.session_state["task_mode"] = "Classification"
+if "trained_on_features" not in st.session_state:
+    st.session_state["trained_on_features"] = None
+if "profile_andre" not in st.session_state:
+    st.session_state["profile_andre"] = None
+if "profile_rica" not in st.session_state:
+    st.session_state["profile_rica"] = None
+if "page_override" not in st.session_state:
+    st.session_state["page_override"] = None
 if "last_sidebar_selected" not in st.session_state:
     st.session_state["last_sidebar_selected"] = None
 if "location_tag" not in st.session_state:
     st.session_state["location_tag"] = ""
 
-# === APPLY THEME (revised design only; logic untouched)
-def apply_theme(theme):
-    """
-    Visual theme only: 3D pastel wave background.
-    Keeps original palette: greenish for Classification, sakura for Regression.
-    """
+# === APPLY THEME (FIXED, CLEAN, WORKING) ===
+
+# --- STYLE INJECTION HELPER (prevents CSS showing as text) ---
+def inject_style(css_html: str) -> None:
+    import streamlit as st  # local import to avoid issues if top-level changes
+    st.markdown(css_html, unsafe_allow_html=True)
+
+
+def apply_theme(theme: dict) -> None:
+    """Design-only: 3D pastel wave background. Preserves original palette via theme dict."""
+    import streamlit as st
+
+    base_bg   = theme.get("background_main", "")
+    sidebar   = theme.get("sidebar_bg", "")
+    title_col = theme.get("title_color", "#ffffff")
+    text_col  = theme.get("text_color", "#ffffff")
+    btn_grad  = theme.get("button_gradient", "linear-gradient(90deg,#66bb6a,#4caf50)")
+    btn_text  = theme.get("button_text", "#0c1d1d")
+
+    # Decide greenish vs sakura palette from button gradient/background
+    greenish = "#4caf50" in btn_grad or "#66bb6a" in btn_grad or "2c" in base_bg.lower()
+    if greenish:
+        spot1, spot2, spot3 = "rgba(210,255,240,.45)", "rgba(175,240,220,.35)", "rgba(230,255,250,.30)"
+    else:
+        spot1, spot2, spot3 = "rgba(255,205,225,.45)", "rgba(255,185,200,.35)", "rgba(245,220,255,.30)"
+
     css = f"""
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
     <style>
-
-    /* Base app structure (keeps your gradient) */
     .stApp {{
         font-family:'Montserrat',sans-serif!important;
-        color:{theme['text_color']};
+        color:{text_col};
         min-height:100vh;
-        background:{theme['background_main']};
+        background:{base_bg};
         background-attachment:fixed;
         position:relative;
         overflow:hidden;
     }}
 
-    /* Typography */
+    /* Headings */
     h1,h2,h3,h4,h5,h6 {{
         font-family:'Playfair Display',serif!important;
-        color:{theme['title_color']};
+        color:{title_col};
         font-weight:700!important;
         text-shadow:0 2px 4px rgba(255,255,255,0.35);
-        animation:floatTitle 3s ease-in-out infinite;
+        animation:ccFloat 3s ease-in-out infinite;
     }}
-    @keyframes floatTitle {{
-        0%,100% {{ transform:translateY(0); }}
-        50% {{ transform:translateY(-2px); }}
-    }}
+    @keyframes ccFloat {{ 0%,100%{{transform:translateY(0)}} 50%{{transform:translateY(-2px)}} }}
 
-    /* 🌊 3D Pastel Wave overlay (pastel, not dark) */
+    /* 3D Pastel Waves (no darkening) */
     .stApp::before,.stApp::after {{
         content:"";
-        position:absolute;
-        inset:-30%;
+        position:absolute; inset:-30%;
         background:
-            radial-gradient(60rem 60rem at 20% 30%, rgba(255,255,255,0.35) 0%, transparent 70%),
-            radial-gradient(50rem 50rem at 80% 40%, rgba(255,255,255,0.25) 0%, transparent 70%),
-            radial-gradient(55rem 55rem at 40% 80%, rgba(255,255,255,0.20) 0%, transparent 70%);
-        /* Why: 'screen' keeps waves pastel on dark bases; no black overlay */
+            radial-gradient(62rem 62rem at 18% 28%, {spot1} 0%, transparent 68%),
+            radial-gradient(54rem 54rem at 82% 38%, {spot2} 0%, transparent 70%),
+            radial-gradient(58rem 58rem at 40% 82%, {spot3} 0%, transparent 72%);
         mix-blend-mode: screen;
-        pointer-events:none;
-        z-index:0;
-        opacity:.55;
-        filter:blur(.3px);
-        animation:waveMoveA 26s linear infinite;
+        pointer-events:none; z-index:0; opacity:.55; filter:blur(.3px);
+        animation:ccWaveA 26s linear infinite;
     }}
-    .stApp::after {{
-        opacity:.38;
-        animation:waveMoveB 32s linear infinite reverse;
+    .stApp::after {{ opacity:.38; animation:ccWaveB 32s linear infinite reverse; }}
+    @keyframes ccWaveA {{
+        0%{{transform:translate3d(0,0,0) rotate(0deg) scale(1.0)}}
+        50%{{transform:translate3d(-4%,-3%,0) rotate(180deg) scale(1.03)}}
+        100%{{transform:translate3d(-8%,-6%,0) rotate(360deg) scale(1.06)}}
     }}
-    @keyframes waveMoveA {{
-        0%   {{ transform: translate3d(0,0,0) rotate(0deg) scale(1.0); }}
-        50%  {{ transform: translate3d(-4%,-3%,0) rotate(180deg) scale(1.03); }}
-        100% {{ transform: translate3d(-8%,-6%,0) rotate(360deg) scale(1.06); }}
-    }}
-    @keyframes waveMoveB {{
-        0%   {{ transform: translate3d(0,0,0) rotate(0deg) scale(1.0); }}
-        50%  {{ transform: translate3d(5%,4%,0) rotate(-180deg) scale(1.02); }}
-        100% {{ transform: translate3d(9%,8%,0) rotate(-360deg) scale(1.05); }}
+    @keyframes ccWaveB {{
+        0%{{transform:translate3d(0,0,0) rotate(0deg) scale(1.0)}}
+        50%{{transform:translate3d(5%,4%,0) rotate(-180deg) scale(1.02)}}
+        100%{{transform:translate3d(9%,8%,0) rotate(-360deg) scale(1.05)}}
     }}
 
-    /* Sidebar (glassy) */
+    /* Sidebar */
     section[data-testid="stSidebar"] {{
-        position:relative!important;
-        z-index:1!important;
-        overflow-y:auto!important;
-        background:{theme['sidebar_bg']}!important;
+        background:{sidebar}!important;
         height:100vh!important;
         backdrop-filter:blur(6px);
         border-right:1px solid rgba(255,255,255,0.18);
+        z-index:1!important;
     }}
+    [data-testid="stAppViewContainer"], .main {{ position:relative!important; z-index:2!important; }}
 
-    [data-testid="stAppViewContainer"], .main {{
-        position:relative!important;
-        z-index:2!important;
-    }}
-
-    /* Glass components */
-    [data-testid="stJson"],
-    [data-testid="stDataFrame"],
-    .stMetric,
-    .element-container .stAlert {{
+    /* Glassy surfaces */
+    [data-testid="stJson"], [data-testid="stDataFrame"], .stMetric, .element-container .stAlert {{
         background:rgba(255,255,255,0.40)!important;
         border-radius:12px!important;
-        border:1px solid rgba(255,255,255,0.20)!important;
+        border:1px solid rgba(255,255,255,0.22)!important;
         backdrop-filter:blur(8px)!important;
         box-shadow:0 2px 12px rgba(0,0,0,0.06)!important;
     }}
 
-    /* Buttons styling */
-    .stButton>button,.stDownloadButton>button {{
-        background:{theme['button_gradient']}!important;
-        color:{theme['button_text']}!important;
-        border-radius:10px!important;
-        padding:0.6rem 1.2rem!important;
-        transition:.15s;
-        box-shadow:0 4px 18px rgba(0,0,0,0.15);
+    /* Buttons */
+    .stButton>button, .stDownloadButton>button {{
+        background:{btn_grad}!important;
+        color:{btn_text}!important;
+        border-radius:10px!important; padding:.6rem 1.2rem!important;
+        transition:.15s; box-shadow:0 4px 18px rgba(0,0,0,0.15);
     }}
-
-    .stButton>button:hover,.stDownloadButton>button:hover {{
-        transform:translateY(-1px);
-        box-shadow:0 10px 28px rgba(0,0,0,0.22);
+    .stButton>button:hover, .stDownloadButton>button:hover {{
+        transform:translateY(-1px); box-shadow:0 10px 28px rgba(0,0,0,0.22);
     }}
-
     </style>
     """
-    st.markdown(css, unsafe_allow_html=True)
-    # Keep mount active for pseudo-layers
-    st.markdown('<div class="bg-decor"></div>', unsafe_allow_html=True)
+    inject_style(css)
+    inject_style('<div class="bg-decor" style="display:none"></div>')
 
-# Apply theme based on task mode (original logic remains)
 apply_theme(st.session_state["current_theme"])
-
-# ------------------------------- #
-# Everything below is your original app code
-# ------------------------------- #
-
-# Your original nav / pages / logic (UNCHANGED) ...
-# (The remainder of your file content stays exactly as it was.)
-
-# -------------- SNIPPET NOTE --------------
-# I have left *all* of your features, data handling, modeling, and page
-# functions untouched. Only the theme function above is modified.
-# -----------------------------------------
-
-# (The rest of your original long file continues here unchanged.)
-# The following lines are placeholders for your existing content in /app.py
-# I intentionally keep them intact so functionality is identical.
-
-# ... (Your existing sidebar, option_menu, page render functions, modeling, etc.)
-# ... (No edits below this line – design only change is in apply_theme())
-
 
 # === SIDEBAR (UNCHANGED LAYOUT) ===
 with st.sidebar:
-    st.markdown(
-        f"""
+    st.markdown(f"""
         <div class="sidebar-header">
           <h2 class="sidebar-title">🌱 Soil Health System</h2>
           <div class="sidebar-sub">ML-Driven Soil Analysis</div>
@@ -874,7 +855,7 @@ def render_profile(name, asset_filename):
     try:
         image = Image.open(asset_path)
         buf = BytesIO()
-        image.save(buf, format="PNG")
+        image.save(buf, format="PNG", unsafe_allow_html=True)
         img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
         img_html = f'<img src="data:image/png;base64,{img_b64}" alt="profile" />'
     except Exception:
@@ -890,8 +871,7 @@ def render_profile(name, asset_filename):
     elif "rica" in name.lower():
         role_line = "Developer | Data Analysis, Visualization, Soil Science"
 
-    st.markdown(
-        f"""
+    st.markdown(f"""
     <div class="avatar-card">
         <div class="avatar-holo">{img_html}</div>
         <div class="avatar-name">{name}</div>
@@ -976,7 +956,7 @@ elif page == "🤖 Modeling":
         """,
             unsafe_allow_html=True,
         )
-        st.markdown("---")
+        st.markdown("---", unsafe_allow_html=True)
 
         if st.session_state["task_mode"] == "Classification":
             if "Fertility_Level" not in df.columns and "Nitrogen" in df.columns:
@@ -1829,7 +1809,7 @@ elif page == "🌿 Insights":
             unsafe_allow_html=True,
         )
 
-        st.markdown("---")
+        st.markdown("---", unsafe_allow_html=True)
 
         st.subheader("Detailed crop evaluation for a specific soil sample")
         if df.shape[0] > 0:
