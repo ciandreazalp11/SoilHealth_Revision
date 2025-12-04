@@ -112,11 +112,12 @@ def apply_theme(theme):
     css = f"""
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
     <style>
+    /* ===== base app using your theme colors ===== */
     .stApp {{
       font-family: 'Montserrat', sans-serif !important;
-      color:{theme['text_color']};
-      min-height:100vh;
-      background: {theme['background_main']};
+      color: {theme['text_color']};
+      min-height: 100vh;
+      background: {theme['background_main']};  /* honors Classification/Regression themes */
       background-attachment: fixed;
       position: relative;
       overflow: hidden;
@@ -146,10 +147,91 @@ def apply_theme(theme):
     .stDataFrame, .dataframe, .stTable, .stTable-container {{
       font-size: 16px !important;
     }}
+
+    /* ===== 🌊 3D animated pastel water background (aligned to your app) ===== */
+    .stApp::before, .stApp::after {{
+        content: "";
+        position: absolute;
+        left: 0; top: 0;
+        width: 200%;
+        height: 200%;
+        /* soft white “wave” pools; stays beautiful over your dark/colored themes */
+        background:
+          radial-gradient(circle at 50% 50%, rgba(255,255,255,0.40) 0%, transparent 70%),
+          radial-gradient(circle at 70% 70%, rgba(255,255,255,0.30) 0%, transparent 70%),
+          radial-gradient(circle at 30% 30%, rgba(255,255,255,0.25) 0%, transparent 70%);
+        animation: waveMove 15s infinite linear;
+        opacity: 0.4;
+        z-index: 0;
+        pointer-events: none;
+    }}
+    .stApp::after {{
+        animation-delay: -7s;
+        opacity: 0.3;
+    }}
+    @keyframes waveMove {{
+        from {{ transform: translateX(0) translateY(0) rotate(0deg); }}
+        to   {{ transform: translateX(-25%) translateY(-25%) rotate(360deg); }}
+    }}
+
+    /* ===== sidebar layering fix (uses your theme['sidebar_bg']) ===== */
+    section[data-testid="stSidebar"] {{
+        position: relative !important;
+        z-index: 1 !important;
+        overflow-y: auto !important;
+        background: {theme['sidebar_bg']} !important;
+        backdrop-filter: blur(6px);
+        height: 100vh !important;
+        border-right: 1px solid rgba(255,255,255,0.25);
+    }}
+    [data-testid="stAppViewContainer"],
+    .main {{
+        position: relative !important;
+        z-index: 2 !important;
+    }}
+    .stApp::before, .stApp::after {{ z-index: 0 !important; }}
+
+    /* ===== glassy components, color-safe on both themes ===== */
+    [data-testid="stJson"] {{
+        background: rgba(240, 248, 255, 0.35) !important;
+        backdrop-filter: blur(10px);
+        border-radius: 15px;
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        color: {theme['primary_color']} !important;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+    }}
+    [data-testid="stDataFrame"], .stMetric {{
+        background: rgba(255, 255, 255, 0.40) !important;
+        backdrop-filter: blur(8px);
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+        color: {theme['text_color']} !important;
+    }}
+
+    /* ===== headings: same wave float, using your title color ===== */
+    h1, h2, h3 {{
+        text-shadow: 0 2px 4px rgba(255,255,255,0.6);
+        animation: floatTitle 3s ease-in-out infinite;
+    }}
+    @keyframes floatTitle {{
+        0%, 100% {{ transform: translateY(0px); }}
+        50% {{ transform: translateY(-3px); }}
+    }}
+
+    /* ===== buttons & radios pick your current theme’s gradient/text ===== */
+    button, .stRadio label:hover {{
+        background: {theme['button_gradient']};
+        color: {theme['button_text']} !important;
+        border-radius: 10px;
+        transition: 0.3s;
+    }}
     </style>
     """
     st.markdown(css, unsafe_allow_html=True)
+    # keep your original extra div if you use it elsewhere (harmless)
     st.markdown('<div class="bg-decor"></div>', unsafe_allow_html=True)
+
 
 
 apply_theme(st.session_state["current_theme"])
