@@ -109,14 +109,14 @@ if "location_tag" not in st.session_state:
 
 # === APPLY THEME (FIXED, CLEAN, WORKING) ===
 
-# --- STYLE INJECTION HELPER (prevents CSS showing as text) ---
+# === STYLE INJECTION HELPER ===
 def inject_style(css_html: str) -> None:
-    import streamlit as st  # local import to avoid issues if top-level changes
+    import streamlit as st
+    # Why: without this flag, <style> prints as text
     st.markdown(css_html, unsafe_allow_html=True)
 
-
 def apply_theme(theme: dict) -> None:
-    """Design-only: 3D pastel wave background. Preserves original palette via theme dict."""
+    """Design-only: 3D pastel wave background; preserves original palettes."""
     import streamlit as st
 
     base_bg   = theme.get("background_main", "")
@@ -126,91 +126,71 @@ def apply_theme(theme: dict) -> None:
     btn_grad  = theme.get("button_gradient", "linear-gradient(90deg,#66bb6a,#4caf50)")
     btn_text  = theme.get("button_text", "#0c1d1d")
 
-    # Decide greenish vs sakura palette from button gradient/background
-    greenish = "#4caf50" in btn_grad or "#66bb6a" in btn_grad or "2c" in base_bg.lower()
+    greenish = "#4caf50" in btn_grad or "#66bb6a" in btn_grad or "#0f2c2c" in base_bg
     if greenish:
         spot1, spot2, spot3 = "rgba(210,255,240,.45)", "rgba(175,240,220,.35)", "rgba(230,255,250,.30)"
     else:
         spot1, spot2, spot3 = "rgba(255,205,225,.45)", "rgba(255,185,200,.35)", "rgba(245,220,255,.30)"
 
     css = f"""
-    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
-    <style>
-    .stApp {{
-        font-family:'Montserrat',sans-serif!important;
-        color:{text_col};
-        min-height:100vh;
-        background:{base_bg};
-        background-attachment:fixed;
-        position:relative;
-        overflow:hidden;
-    }}
-
-    /* Headings */
-    h1,h2,h3,h4,h5,h6 {{
-        font-family:'Playfair Display',serif!important;
-        color:{title_col};
-        font-weight:700!important;
-        text-shadow:0 2px 4px rgba(255,255,255,0.35);
-        animation:ccFloat 3s ease-in-out infinite;
-    }}
-    @keyframes ccFloat {{ 0%,100%{{transform:translateY(0)}} 50%{{transform:translateY(-2px)}} }}
-
-    /* 3D Pastel Waves (no darkening) */
-    .stApp::before,.stApp::after {{
-        content:"";
-        position:absolute; inset:-30%;
-        background:
-            radial-gradient(62rem 62rem at 18% 28%, {spot1} 0%, transparent 68%),
-            radial-gradient(54rem 54rem at 82% 38%, {spot2} 0%, transparent 70%),
-            radial-gradient(58rem 58rem at 40% 82%, {spot3} 0%, transparent 72%);
-        mix-blend-mode: screen;
-        pointer-events:none; z-index:0; opacity:.55; filter:blur(.3px);
-        animation:ccWaveA 26s linear infinite;
-    }}
-    .stApp::after {{ opacity:.38; animation:ccWaveB 32s linear infinite reverse; }}
-    @keyframes ccWaveA {{
-        0%{{transform:translate3d(0,0,0) rotate(0deg) scale(1.0)}}
-        50%{{transform:translate3d(-4%,-3%,0) rotate(180deg) scale(1.03)}}
-        100%{{transform:translate3d(-8%,-6%,0) rotate(360deg) scale(1.06)}}
-    }}
-    @keyframes ccWaveB {{
-        0%{{transform:translate3d(0,0,0) rotate(0deg) scale(1.0)}}
-        50%{{transform:translate3d(5%,4%,0) rotate(-180deg) scale(1.02)}}
-        100%{{transform:translate3d(9%,8%,0) rotate(-360deg) scale(1.05)}}
-    }}
-
-    /* Sidebar */
-    section[data-testid="stSidebar"] {{
-        background:{sidebar}!important;
-        height:100vh!important;
-        backdrop-filter:blur(6px);
-        border-right:1px solid rgba(255,255,255,0.18);
-        z-index:1!important;
-    }}
-    [data-testid="stAppViewContainer"], .main {{ position:relative!important; z-index:2!important; }}
-
-    /* Glassy surfaces */
-    [data-testid="stJson"], [data-testid="stDataFrame"], .stMetric, .element-container .stAlert {{
-        background:rgba(255,255,255,0.40)!important;
-        border-radius:12px!important;
-        border:1px solid rgba(255,255,255,0.22)!important;
-        backdrop-filter:blur(8px)!important;
-        box-shadow:0 2px 12px rgba(0,0,0,0.06)!important;
-    }}
-
-    /* Buttons */
-    .stButton>button, .stDownloadButton>button {{
-        background:{btn_grad}!important;
-        color:{btn_text}!important;
-        border-radius:10px!important; padding:.6rem 1.2rem!important;
-        transition:.15s; box-shadow:0 4px 18px rgba(0,0,0,0.15);
-    }}
-    .stButton>button:hover, .stDownloadButton>button:hover {{
-        transform:translateY(-1px); box-shadow:0 10px 28px rgba(0,0,0,0.22);
-    }}
-    </style>
-    """
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
+<style>
+.stApp {{
+  font-family:'Montserrat',sans-serif!important;
+  color:{text_col};
+  min-height:100vh;
+  background:{base_bg};
+  background-attachment:fixed;
+  position:relative; overflow:hidden;
+}}
+h1,h2,h3,h4,h5,h6 {{
+  font-family:'Playfair Display',serif!important;
+  color:{title_col}; font-weight:700!important;
+  text-shadow:0 2px 4px rgba(255,255,255,.35);
+  animation:ccFloat 3s ease-in-out infinite;
+}}
+@keyframes ccFloat {{ 0%,100%{{transform:translateY(0)}} 50%{{transform:translateY(-2px)}} }}
+.stApp::before,.stApp::after {{
+  content:""; position:absolute; inset:-30%;
+  background:
+    radial-gradient(62rem 62rem at 18% 28%, {spot1} 0%, transparent 68%),
+    radial-gradient(54rem 54rem at 82% 38%, {spot2} 0%, transparent 70%),
+    radial-gradient(58rem 58rem at 40% 82%, {spot3} 0%, transparent 72%);
+  mix-blend-mode: screen; pointer-events:none; z-index:0;
+  opacity:.55; filter:blur(.3px); animation:ccWaveA 26s linear infinite;
+}}
+.stApp::after {{ opacity:.38; animation:ccWaveB 32s linear infinite reverse; }}
+@keyframes ccWaveA {{
+  0%{{transform:translate3d(0,0,0) rotate(0deg) scale(1.0)}}
+  50%{{transform:translate3d(-4%,-3%,0) rotate(180deg) scale(1.03)}}
+  100%{{transform:translate3d(-8%,-6%,0) rotate(360deg) scale(1.06)}}
+}}
+@keyframes ccWaveB {{
+  0%{{transform:translate3d(0,0,0) rotate(0deg) scale(1.0)}}
+  50%{{transform:translate3d(5%,4%,0) rotate(-180deg) scale(1.02)}}
+  100%{{transform:translate3d(9%,8%,0) rotate(-360deg) scale(1.05)}}
+}}
+section[data-testid="stSidebar"] {{
+  background:{sidebar}!important; height:100vh!important;
+  backdrop-filter:blur(6px); border-right:1px solid rgba(255,255,255,.18);
+  z-index:1!important;
+}}
+[data-testid="stAppViewContainer"], .main {{ position:relative!important; z-index:2!important; }}
+[data-testid="stJson"], [data-testid="stDataFrame"], .stMetric, .element-container .stAlert {{
+  background:rgba(255,255,255,.40)!important; border-radius:12px!important;
+  border:1px solid rgba(255,255,255,.22)!important; backdrop-filter:blur(8px)!important;
+  box-shadow:0 2px 12px rgba(0,0,0,.06)!important;
+}}
+.stButton>button, .stDownloadButton>button {{
+  background:{btn_grad}!important; color:{btn_text}!important;
+  border-radius:10px!important; padding:.6rem 1.2rem!important;
+  transition:.15s; box-shadow:0 4px 18px rgba(0,0,0,.15);
+}}
+.stButton>button:hover, .stDownloadButton>button:hover {{
+  transform:translateY(-1px); box-shadow:0 10px 28px rgba(0,0,0,.22);
+}}
+</style>
+"""
     inject_style(css)
     inject_style('<div class="bg-decor" style="display:none"></div>')
 
