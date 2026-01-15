@@ -24,6 +24,8 @@ import joblib
 import time
 import base64
 from PIL import Image
+import matplotlib.pyplot as plt
+import seaborn as sns
 import warnings
 import re
 
@@ -1340,6 +1342,22 @@ elif page == "📊 Visualization":
                 st.plotly_chart(fig, use_container_width=True)
                 st.markdown("---")
 
+
+        # Additional notebook-style visualizations: boxplots by fertility level (from Colab)
+        if "Fertility_Level" in df.columns and param_cols:
+            st.subheader("Distributions by Fertility Level (from notebook)")
+            with st.expander("Show boxplots by fertility class", expanded=False):
+                cat_col = "Fertility_Level"
+                for feature in param_cols:
+                    fig_box, ax_box = plt.subplots(figsize=(6, 4))
+                    sns.boxplot(data=df, x=cat_col, y=feature, ax=ax_box)
+                    ax_box.set_title(f"Distribution of {feature} by {cat_col}")
+                    ax_box.set_xlabel(cat_col)
+                    ax_box.set_ylabel(feature)
+                    st.pyplot(fig_box)
+        elif "Fertility_Level" not in df.columns:
+            st.info("Column 'Fertility_Level' not found. Boxplots by fertility class are skipped.")
+
         st.subheader("Correlation Matrix")
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         if numeric_cols:
@@ -1393,6 +1411,71 @@ elif page == "📊 Visualization":
                     fig_corr.update_traces(text=None)
 
                 st.plotly_chart(fig_corr, use_container_width=True)
+                # Scatter plots for most correlated feature pairs (from notebook)
+                with st.expander("Scatter plots for most correlated feature pairs (from notebook)", expanded=False):
+                    threshold = st.slider(
+                        "Minimum absolute correlation to include",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=0.5,
+                        step=0.05,
+                        key="corr_pair_threshold",
+                    )
+                    max_pairs = st.slider(
+                        "Maximum number of pairs to show",
+                        min_value=1,
+                        max_value=10,
+                        value=5,
+                        key="corr_pair_max_pairs",
+                    )
+
+                    import numpy as _np
+
+                    corr_abs = corr.abs()
+                    # upper triangle mask to avoid duplicate pairs
+                    mask = _np.triu(_np.ones_like(corr_abs, dtype=bool), k=1)
+                    corr_long = corr_abs.where(mask)
+
+                    pairs = (
+                        corr_long.stack()
+                        .reset_index()
+                        .rename(columns={"level_0": "Feature1", "level_1": "Feature2", 0: "Correlation"})
+                    )
+                    pairs = pairs[pairs["Correlation"] >= threshold].sort_values(
+                        "Correlation", ascending=False
+                    ).head(max_pairs)
+
+                    if pairs.empty:
+                        st.info("No feature pairs meet the selected threshold.")
+                    else:
+                        for _, row in pairs.iterrows():
+                            f1, f2, cval = row["Feature1"], row["Feature2"], row["Correlation"]
+                            fig_scatter = px.scatter(
+                                df,
+                                x=f1,
+                                y=f2,
+                                trendline="ols",
+                                title=f"{f1} vs {f2} (|corr| = {cval:.2f})",
+                            )
+                            st.plotly_chart(fig_scatter, use_container_width=True)
+
+                # Optional Seaborn pairplot (from notebook)
+                show_pairplot = st.checkbox(
+                    "Show Seaborn pairplot for selected numeric features (from notebook)",
+                    value=False,
+                )
+                if show_pairplot:
+                    pair_df = df[selected_cols].dropna()
+                    if pair_df.shape[1] > 1:
+                        g = sns.pairplot(pair_df, diag_kind="kde")
+                        g.fig.suptitle(
+                            "Pairwise relationships between selected numerical features",
+                            y=1.02,
+                        )
+                        st.pyplot(g.fig)
+                    else:
+                        st.info("Need at least 2 numeric columns for a pairplot.")
+
         else:
             st.info("No numeric columns available for correlation matrix.")
         st.markdown("---")
