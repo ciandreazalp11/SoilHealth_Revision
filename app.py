@@ -1162,543 +1162,558 @@ elif page == "🤖 Modeling":
                     )
 
 elif page == "📊 Visualization":
-    st.title("📊 Data Visualization")
+    st.title("📊 Visual Analytics")
     st.markdown(
-        "Explore distributions, correlations, locations, and relationships in your preprocessed data."
+        "All charts are organized by goal: **EDA** (understand the data), **Spatial** (maps), and **Clusters** (groupings)."
     )
+
     if st.session_state["df"] is None:
         st.info("Please upload data first in 'Home' (Upload Data is integrated there).")
     else:
-        df = st.session_state["df"]
+        df = st.session_state["df"].copy()
+
+        # Ensure a fertility label exists (used by several visuals)
         if "Nitrogen" in df.columns and "Fertility_Level" not in df.columns:
-            df["Fertility_Level"] = create_fertility_label(
-                df, col="Nitrogen", q=3
-            )        
-        # ===== NEW: Folium classification map (RF) — dots only, strict Mindanao land-safe bounds, with legend =====
-        st.subheader("🗺️ Soil Health Classification Map (Random Forest)")
-        st.caption("Legend: 🟢 High • 🟠 Moderate • 🔴 Poor. Uses your trained Random Forest predictions.")
+            df["Fertility_Level"] = create_fertility_label(df, col="Nitrogen", q=3)
 
+        # ---- Dataset status header ----
+        st.markdown("### Dataset Status")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Rows", f"{len(df):,}")
+        c2.metric("Columns", f"{df.shape[1]:,}")
+        c3.metric("Missing cells", f"{int(df.isna().sum().sum()):,}")
 
-        if "Latitude" in df.columns and "Longitude" in df.columns:
-            model = st.session_state.get("model")
-            scaler = st.session_state.get("scaler")
-            trained_features = st.session_state.get("trained_on_features")
-            results = st.session_state.get("results")
+        has_coords = ("Latitude" in df.columns) and ("Longitude" in df.columns)
+        if has_coords:
+            try:
+                land_count = len(_filter_mindanao_land_only(df))
+            except Exception:
+                land_count = 0
+            c4.metric("Mindanao land points", f"{land_count:,}")
+        else:
+            c4.metric("Mindanao land points", "—")
 
-            if (
-                model is not None
-                and scaler is not None
-                and trained_features is not None
-                and all(f in df.columns for f in trained_features)
-            ):
-                try:
-                    # Predict for all rows
-                    X_all = df[trained_features]
-                    X_scaled_all = scaler.transform(X_all)
-                    preds = model.predict(X_scaled_all)
+        performance_mode = st.toggle(
+            "⚡ Performance mode (recommended for large datasets)",
+            value=True,
+            help="Automatically samples rows for heavy plots (pairplots, cluster pairplots) to keep the app responsive.",
+        )
 
-                    # Determine task
-                    task = None
-                    if results and isinstance(results, dict) and "task" in results:
-                        task = results["task"]
-                    else:
-                        task = st.session_state.get("task_mode", "Classification")
+        st.markdown("---")
 
-                    df_rf = df.copy()
-                    df_rf["RF_Prediction"] = preds
+        # ---- Organized tabs ----
+        tab_eda, tab_spatial, tab_clusters = st.tabs(["🔎 EDA", "🗺️ Spatial", "🧩 Clusters"])
 
-                    # Convert predictions to Sustainability classes
-                    if str(task).lower().startswith("class"):
-                        def _to_sustainability(v):
-                            s = str(v).strip().lower()
-                            if s in {"high"}:
-                                return "High"
-                            if s in {"moderate", "medium"}:
-                                return "Moderate"
-                            if s in {"poor", "low"}:
-                                return "Poor"
-                            # fallback: keep original if it matches
-                            return str(v)
+        # =====================
+        # 🔎 EDA
+        # =====================
+        with tab_eda:
+            st.subheader("Parameter Overview")
+            st.caption("Distributions of key soil parameters. Use this to spot skew, outliers, and typical ranges.")
 
-                        df_rf["Sustainability"] = df_rf["RF_Prediction"].apply(_to_sustainability)
-                    else:
-                        # Regression → bucket into Poor/Moderate/High using terciles
-                        p = pd.to_numeric(df_rf["RF_Prediction"], errors="coerce")
-                        q1, q2 = p.quantile([0.33, 0.66]).values
-                        def _bucket(val):
-                            if pd.isna(val):
-                                return np.nan
-                            if val <= q1:
-                                return "Poor"
-                            if val <= q2:
-                                return "Moderate"
-                            return "High"
-                        df_rf["Sustainability"] = p.apply(_bucket)
+            param_cols = [
+                c
+                for c in ["pH", "Nitrogen", "Phosphorus", "Potassium", "Moisture", "Organic Matter"]
+                if c in df.columns
+            ]
 
-                    # Filter to Mindanao land-safe bounds (hides offshore/outside points)
-                    df_map = _filter_mindanao_land_only(df_rf).dropna(subset=["Sustainability"])
+            if not param_cols:
+                st.warning(
+                    "No recognized parameter columns found. Example columns: pH, Nitrogen, Phosphorus, Potassium, Moisture, Organic Matter"
+                )
+            else:
+                for col in param_cols:
+                    fig = px.histogram(
+                        df,
+                        x=col,
+                        nbins=30,
+                        marginal="box",
+                        title=f"Distribution: {col}",
+                        color_discrete_sequence=[st.session_state["current_theme"]["primary_color"]],
+                    )
+                    fig.update_layout(template="plotly_dark")
+                    st.plotly_chart(fig, use_container_width=True)
+                    st.caption(f"Histogram + box summary for **{col}**.")
+                    st.markdown("---")
 
-                    if not df_map.empty:
-                        center_lat = float(df_map["Latitude"].mean())
-                        center_lon = float(df_map["Longitude"].mean())
+            st.subheader("Correlation Matrix")
+            st.caption("How numeric features move together. Strong correlations can indicate redundancy or meaningful relationships.")
 
-                        m = folium.Map(
-                            location=[center_lat, center_lon],
-                            zoom_start=7,
-                            tiles="CartoDB dark_matter",
-                            control_scale=True,
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            if numeric_cols:
+                exclude_like = {"latitude", "lat", "longitude", "lon", "lng", "long", "longitude_2"}
+                default_cols = [c for c in numeric_cols if c.strip().lower() not in exclude_like][:12]
+                selected_cols = st.multiselect(
+                    "Select numeric columns (fewer columns = clearer heatmap)",
+                    options=numeric_cols,
+                    default=default_cols if len(default_cols) >= 2 else numeric_cols[: min(12, len(numeric_cols))],
+                )
+
+                if selected_cols is None or len(selected_cols) < 2:
+                    st.info("Select at least 2 numeric columns to view the correlation matrix.")
+                else:
+                    show_values = st.checkbox(
+                        "Show correlation values on cells (can get cluttered)",
+                        value=False,
+                    )
+
+                    corr = df[selected_cols].corr()
+                    corr = corr.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+                    fig_corr = px.imshow(
+                        corr,
+                        color_continuous_scale=px.colors.sequential.Viridis,
+                        zmin=-1,
+                        zmax=1,
+                        aspect="auto",
+                        title="Correlation Heatmap",
+                    )
+                    fig_corr.update_layout(
+                        template="plotly_dark",
+                        height=650,
+                        margin=dict(l=40, r=40, t=70, b=40),
+                    )
+                    fig_corr.update_xaxes(tickangle=45, tickfont=dict(size=12))
+                    fig_corr.update_yaxes(tickfont=dict(size=12))
+
+                    if show_values and len(selected_cols) <= 15:
+                        txt = corr.round(2).astype(str).values
+                        fig_corr.update_traces(
+                            text=txt,
+                            texttemplate="%{text}",
+                            textfont=dict(color="white", size=10),
                         )
+                    else:
+                        fig_corr.update_traces(text=None)
 
-                        # Lock map bounds to filtered data extent
-                        min_lat, max_lat = float(df_map["Latitude"].min()), float(df_map["Latitude"].max())
-                        min_lon, max_lon = float(df_map["Longitude"].min()), float(df_map["Longitude"].max())
+                    st.plotly_chart(fig_corr, use_container_width=True)
+                    st.caption("Correlation heatmap for the selected numeric features.")
+            else:
+                st.info("No numeric columns available for correlation matrix.")
+
+            # ---- Notebook-style EDA (in expanders) ----
+            st.markdown("---")
+            st.subheader("📒 Notebook EDA (Colab-style)")
+            st.caption("These visuals mirror the notebook’s EDA without cluttering the main flow.")
+
+            import matplotlib.pyplot as plt
+            try:
+                import seaborn as sns
+                _has_sns = True
+            except Exception:
+                sns = None
+                _has_sns = False
+
+            def _pick_col(_df, candidates):
+                for c in candidates:
+                    if c in _df.columns:
+                        return c
+                return None
+
+            fert_col = _pick_col(df, ["fertility_class", "Fertility_Level"])
+
+            features = []
+            for c in ["pH", "ph", "PH"]:
+                if c in df.columns:
+                    features.append(c)
+                    break
+            for c in ["Nitrogen", "Phosphorus", "Potassium", "Moisture", "Organic Matter", "Organic_Matter"]:
+                if c in df.columns and c not in features:
+                    features.append(c)
+
+            for c in features:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+
+            with st.expander("Pairplot (slow)", expanded=False):
+                st.markdown("**What it shows:** relationships between every pair of key soil features.")
+                if not _has_sns:
+                    st.info("Seaborn is not installed, so pairplots are unavailable.")
+                elif len(features) < 2:
+                    st.info("Not enough numeric columns available for a pairplot.")
+                else:
+                    max_n = 1500 if performance_mode else 6000
+                    sample_n = st.slider(
+                        "Sample size",
+                        min_value=200,
+                        max_value=max_n,
+                        value=min(1500, max_n),
+                        step=100,
+                        key="nb_pairplot_sample",
+                    )
+                    d = df[features].dropna()
+                    if len(d) > sample_n:
+                        d = d.sample(sample_n, random_state=42)
+                    g = sns.pairplot(d, diag_kind="kde")
+                    st.pyplot(g.figure, clear_figure=True)
+                    st.caption("Pairplot: diagonals show KDE distributions; off-diagonals show pairwise scatter.")
+
+            with st.expander("Histograms + KDE (per feature)", expanded=False):
+                st.markdown("**What it shows:** each feature’s distribution + density curve.")
+                if not _has_sns:
+                    st.info("Seaborn is not installed, so KDE histograms are unavailable.")
+                elif not features:
+                    st.info("No notebook numeric features found in this dataset.")
+                else:
+                    chosen = st.multiselect("Choose features", features, default=features, key="nb_hist_features")
+                    for f in chosen:
+                        x = df[f].dropna()
+                        if x.empty:
+                            continue
+                        fig, ax = plt.subplots(figsize=(9, 4))
+                        sns.histplot(data=df, x=f, kde=True, ax=ax)
+                        ax.set_title(f"Distribution of {f}")
+                        ax.set_xlabel(f)
+                        ax.set_ylabel("Frequency")
+                        st.pyplot(fig, clear_figure=True)
+                        st.caption(f"Histogram + KDE for **{f}**.")
+
+            with st.expander("Boxplots by Fertility (per feature)", expanded=False):
+                st.markdown("**What it shows:** differences in feature distributions across fertility groups.")
+                if not _has_sns:
+                    st.info("Seaborn is not installed, so boxplots are unavailable.")
+                elif fert_col is None:
+                    st.info("Fertility label not found. Expected `fertility_class` or `Fertility_Level`.")
+                elif not features:
+                    st.info("No notebook numeric features found in this dataset.")
+                else:
+                    chosen = st.multiselect(
+                        "Choose features",
+                        features,
+                        default=features,
+                        key="nb_box_features",
+                    )
+                    for f in chosen:
+                        dtmp = df[[fert_col, f]].dropna()
+                        if dtmp.empty:
+                            continue
+                        fig, ax = plt.subplots(figsize=(10, 4))
+                        sns.boxplot(data=dtmp, x=fert_col, y=f, ax=ax)
+                        ax.set_title(f"{f} by {fert_col}")
+                        ax.set_xlabel(fert_col)
+                        ax.set_ylabel(f)
+                        st.pyplot(fig, clear_figure=True)
+                        st.caption(f"Boxplot of **{f}** grouped by **{fert_col}**.")
+
+            with st.expander("Correlated Pairs (auto-selected)", expanded=False):
+                st.markdown("**What it shows:** the strongest correlated feature pairs as scatterplots.")
+                if not _has_sns:
+                    st.info("Seaborn is not installed, so scatterplots are unavailable.")
+                elif len(features) < 2:
+                    st.info("Need at least 2 numeric features to compute correlations.")
+                else:
+                    threshold = st.slider("Correlation threshold (abs)", 0.05, 0.95, 0.10, 0.05, key="nb_corr_thr")
+                    topk = st.slider("Max pairs to plot", 1, 25, 10, 1, key="nb_corr_topk")
+
+                    corr2 = df[features].corr(numeric_only=True)
+                    pairs = (
+                        corr2.where(np.triu(np.ones(corr2.shape), k=1).astype(bool))
+                        .stack()
+                        .reset_index()
+                    )
+                    pairs.columns = ["Feature1", "Feature2", "Correlation"]
+                    pairs["AbsCorr"] = pairs["Correlation"].abs()
+                    pairs = pairs[pairs["AbsCorr"] >= threshold].sort_values("AbsCorr", ascending=False).head(topk)
+
+                    if pairs.empty:
+                        st.info("No correlated pairs meet the threshold.")
+                    else:
+                        st.dataframe(pairs[["Feature1", "Feature2", "Correlation"]], use_container_width=True)
+                        for _, r in pairs.iterrows():
+                            f1, f2, cval = r["Feature1"], r["Feature2"], r["Correlation"]
+                            dtmp = df[[f1, f2]].dropna()
+                            fig, ax = plt.subplots(figsize=(8, 5))
+                            sns.scatterplot(data=dtmp, x=f1, y=f2, ax=ax, alpha=0.7)
+                            ax.set_title(f"{f2} vs {f1} (corr={cval:.2f})")
+                            st.pyplot(fig, clear_figure=True)
+                            st.caption(f"Scatterplot for correlated pair **{f1} ↔ {f2}**.")
+
+        # =====================
+        # 🗺️ Spatial
+        # =====================
+        with tab_spatial:
+            st.subheader("Soil Health Classification Map (Random Forest)")
+            st.caption("Legend: 🟢 High • 🟠 Moderate • 🔴 Poor. Uses your trained Random Forest predictions and hides offshore/outside points.")
+
+            if not has_coords:
+                st.info("Latitude and Longitude columns are required to generate the Folium map.")
+            else:
+                model = st.session_state.get("model")
+                scaler = st.session_state.get("scaler")
+                trained_features = st.session_state.get("trained_on_features")
+                results = st.session_state.get("results")
+
+                if (
+                    model is not None
+                    and scaler is not None
+                    and trained_features is not None
+                    and all(f in df.columns for f in trained_features)
+                ):
+                    try:
+                        X_all = df[trained_features]
+                        X_scaled_all = scaler.transform(X_all)
+                        preds = model.predict(X_scaled_all)
+
+                        task = None
+                        if results and isinstance(results, dict) and "task" in results:
+                            task = results["task"]
+                        else:
+                            task = st.session_state.get("task_mode", "Classification")
+
+                        df_rf = df.copy()
+                        df_rf["RF_Prediction"] = preds
+
+                        if str(task).lower().startswith("class"):
+                            def _to_sustainability(v):
+                                s = str(v).strip().lower()
+                                if s in {"high"}:
+                                    return "High"
+                                if s in {"moderate", "medium"}:
+                                    return "Moderate"
+                                if s in {"poor", "low"}:
+                                    return "Poor"
+                                return str(v)
+
+                            df_rf["Sustainability"] = df_rf["RF_Prediction"].apply(_to_sustainability)
+                        else:
+                            p = pd.to_numeric(df_rf["RF_Prediction"], errors="coerce")
+                            q1, q2 = p.quantile([0.33, 0.66]).values
+
+                            def _bucket(val):
+                                if pd.isna(val):
+                                    return np.nan
+                                if val <= q1:
+                                    return "Poor"
+                                if val <= q2:
+                                    return "Moderate"
+                                return "High"
+
+                            df_rf["Sustainability"] = p.apply(_bucket)
+
+                        df_map = _filter_mindanao_land_only(df_rf).dropna(subset=["Sustainability"])
+
+                        if not df_map.empty:
+                            center_lat = float(df_map["Latitude"].mean())
+                            center_lon = float(df_map["Longitude"].mean())
+
+                            m = folium.Map(
+                                location=[center_lat, center_lon],
+                                zoom_start=7,
+                                tiles="CartoDB dark_matter",
+                                control_scale=True,
+                            )
+
+                            min_lat, max_lat = float(df_map["Latitude"].min()), float(df_map["Latitude"].max())
+                            min_lon, max_lon = float(df_map["Longitude"].min()), float(df_map["Longitude"].max())
+                            m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
+                            m.options["maxBounds"] = [[min_lat, min_lon], [max_lat, max_lon]]
+
+                            color_map = {"High": "#2ecc71", "Moderate": "#f39c12", "Poor": "#e74c3c"}
+
+                            for _, r in df_map.iterrows():
+                                cls = str(r["Sustainability"]).strip().title()
+                                if cls not in color_map:
+                                    cls = "Moderate"
+                                folium.CircleMarker(
+                                    location=[float(r["Latitude"]), float(r["Longitude"])],
+                                    radius=4,
+                                    color=color_map[cls],
+                                    fill=True,
+                                    fill_color=color_map[cls],
+                                    fill_opacity=0.85,
+                                    weight=0,
+                                ).add_to(m)
+
+                            legend_html = '''
+                            <div style="
+                                position: fixed;
+                                bottom: 30px;
+                                left: 30px;
+                                z-index: 9999;
+                                background: rgba(0,0,0,0.65);
+                                padding: 12px 14px;
+                                border-radius: 10px;
+                                color: white;
+                                font-size: 14px;
+                                line-height: 18px;
+                                ">
+                                <div style="font-weight:700; margin-bottom:6px;">Soil Health (Sustainability)</div>
+                                <div><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#2ecc71;margin-right:8px;"></span>High</div>
+                                <div><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#f39c12;margin-right:8px;"></span>Moderate</div>
+                                <div><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#e74c3c;margin-right:8px;"></span>Poor</div>
+                            </div>
+                            '''
+                            m.get_root().html.add_child(folium.Element(legend_html))
+
+                            st_folium(m, width=1024, height=520)
+                        else:
+                            st.info("No valid Mindanao land points to display after filtering coordinates.")
+                    except Exception as e:
+                        st.warning(f"Unable to generate the Folium map from Random Forest predictions: {e}")
+                else:
+                    st.info("To enable this map, train a model first in the '🤖 Modeling' page.")
+
+            # ---- Notebook spatial visuals ----
+            st.markdown("---")
+            st.subheader("📒 Notebook Spatial Visuals")
+            st.caption("These replicate the notebook’s geo scatter and fertility folium maps, with the same land-only filtering to hide offshore points.")
+
+            import matplotlib.pyplot as plt
+            try:
+                import seaborn as sns
+                _has_sns2 = True
+            except Exception:
+                sns = None
+                _has_sns2 = False
+
+            def _pick_col(_df, candidates):
+                for c in candidates:
+                    if c in _df.columns:
+                        return c
+                return None
+
+            fert_col = _pick_col(df, ["fertility_class", "Fertility_Level"])
+            lat_col = _pick_col(df, ["latitude", "Latitude"])
+            lon_col = _pick_col(df, ["longitude_1", "Longitude", "longitude", "lon", "lng"])
+
+            # Geo scatter (N/P/K)
+            with st.expander("Geographical Distribution (N/P/K)", expanded=False):
+                st.markdown("**What it shows:** where nutrient concentrations are higher/lower across locations.")
+                if not _has_sns2:
+                    st.info("Seaborn is not installed, so geo scatterplots are unavailable.")
+                elif lat_col is None or lon_col is None:
+                    st.info("Latitude/Longitude not found for geo scatterplots.")
+                else:
+                    nutrients = [c for c in ["Nitrogen", "Phosphorus", "Potassium"] if c in df.columns]
+                    if not nutrients:
+                        st.info("N/P/K columns not found.")
+                    else:
+                        for n in nutrients:
+                            dtmp = df[[lat_col, lon_col, n]].dropna()
+                            if dtmp.empty:
+                                continue
+                            fig, ax = plt.subplots(figsize=(10, 6))
+                            sns.scatterplot(
+                                data=dtmp,
+                                x=lon_col,
+                                y=lat_col,
+                                size=n,
+                                sizes=(20, 250),
+                                alpha=0.7,
+                                ax=ax,
+                            )
+                            ax.set_title(f"Geographical Distribution of {n}")
+                            ax.set_xlabel("Longitude")
+                            ax.set_ylabel("Latitude")
+                            ax.grid(True)
+                            st.pyplot(fig, clear_figure=True)
+                            st.caption(f"Geo scatter for **{n}**; marker size reflects concentration.")
+
+            # Fertility Folium maps (overall + by class) with land filtering
+            with st.expander("Fertility Folium Maps (land-only)", expanded=False):
+                st.markdown("**What it shows:** interactive fertility points (overall + per class) with popups. Offshore points are filtered out.")
+                if fert_col is None:
+                    st.info("Fertility label not found (expected `fertility_class` or `Fertility_Level`).")
+                elif lat_col is None or lon_col is None:
+                    st.info("Latitude/Longitude not found for folium mapping.")
+                else:
+                    color_map = {"Low": "red", "Moderate": "orange", "High": "green"}
+
+                    base = df.dropna(subset=[lat_col, lon_col, fert_col]).copy()
+
+                    # Standardize columns so we can apply the same Mindanao land-only filter
+                    base_std = base.rename(columns={lat_col: "Latitude", lon_col: "Longitude"}).copy()
+                    base_std = _filter_mindanao_land_only(base_std)
+
+                    # Map back to original names (for popups/labels)
+                    base_std[lat_col] = base_std["Latitude"]
+                    base_std[lon_col] = base_std["Longitude"]
+
+                    def _render_folium_map(sub_df, title):
+                        if sub_df.empty:
+                            st.warning(f"No rows available for: {title}")
+                            return
+
+                        center_lat = float(sub_df[lat_col].mean())
+                        center_lon = float(sub_df[lon_col].mean())
+                        m = folium.Map(location=[center_lat, center_lon], zoom_start=8)
+
+                        min_lat, max_lat = float(sub_df[lat_col].min()), float(sub_df[lat_col].max())
+                        min_lon, max_lon = float(sub_df[lon_col].min()), float(sub_df[lon_col].max())
                         m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
                         m.options["maxBounds"] = [[min_lat, min_lon], [max_lat, max_lon]]
 
-                        color_map = {"High": "#2ecc71", "Moderate": "#f39c12", "Poor": "#e74c3c"}
-
-                        for _, r in df_map.iterrows():
-                            cls = str(r["Sustainability"]).strip().title()
-                            if cls not in color_map:
-                                # Any unknown labels default to Moderate color
-                                cls = "Moderate"
+                        for _, row in sub_df.iterrows():
+                            fert = str(row[fert_col])
+                            col = color_map.get(fert, "blue")
+                            popup = (
+                                f"<b>Fertility:</b> {fert}<br>"
+                                f"<b>N:</b> {row.get('Nitrogen', np.nan)}<br>"
+                                f"<b>P:</b> {row.get('Phosphorus', np.nan)}<br>"
+                                f"<b>K:</b> {row.get('Potassium', np.nan)}"
+                            )
                             folium.CircleMarker(
-                                location=[float(r["Latitude"]), float(r["Longitude"])],
-                                radius=4,
-                                color=color_map[cls],
+                                location=[row[lat_col], row[lon_col]],
+                                radius=5,
+                                color=col,
                                 fill=True,
-                                fill_color=color_map[cls],
-                                fill_opacity=0.85,
-                                weight=0,
+                                fill_color=col,
+                                fill_opacity=0.7,
+                                popup=folium.Popup(popup, max_width=300),
                             ).add_to(m)
 
-                        # Legend (bottom-left)
-                        legend_html = '''
-                        <div style="
-                            position: fixed;
-                            bottom: 30px;
-                            left: 30px;
-                            z-index: 9999;
-                            background: rgba(0,0,0,0.65);
-                            padding: 12px 14px;
-                            border-radius: 10px;
-                            color: white;
-                            font-size: 14px;
-                            line-height: 18px;
-                            ">
-                            <div style="font-weight:700; margin-bottom:6px;">Soil Health (Sustainability)</div>
-                            <div><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#2ecc71;margin-right:8px;"></span>High</div>
-                            <div><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#f39c12;margin-right:8px;"></span>Moderate</div>
-                            <div><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#e74c3c;margin-right:8px;"></span>Poor</div>
-                        </div>
-                        '''
-                        m.get_root().html.add_child(folium.Element(legend_html))
-
+                        st.markdown(f"**{title}**")
                         st_folium(m, width=1024, height=520)
-                    else:
-                        st.info("No valid Mindanao land points to display after filtering coordinates.")
-                except Exception as e:
-                    st.warning(f"Unable to generate the Folium map from Random Forest predictions: {e}")
-            else:
-                st.info("To enable this map, train a model first in the '🤖 Modeling' page.")
-        else:
-            st.info("Latitude and Longitude columns are required to generate the Folium map.")
-        # ===== END NEW Folium hotspot section =====
+                        st.caption("Interactive map with popups (land-only filtered).")
 
+                    _render_folium_map(base_std, "Overall Fertility Map (All Classes)")
 
-        st.subheader("Parameter Overview (Levels & Distributions)")
-        param_cols = [
-            c
-            for c in [
-                "pH",
-                "Nitrogen",
-                "Phosphorus",
-                "Potassium",
-                "Moisture",
-                "Organic Matter",
-            ]
-            if c in df.columns
-        ]
-        if not param_cols:
-            st.warning(
-                "No recognized parameter columns found. Required example columns: "
-                "pH, Nitrogen, Phosphorus, Potassium, Moisture, Organic Matter"
-            )
-        else:
-            for col in param_cols:
-                fig = px.histogram(
-                    df,
-                    x=col,
-                    nbins=30,
-                    marginal="box",
-                    title=f"Distribution: {col}",
-                    color_discrete_sequence=[
-                        st.session_state["current_theme"]["primary_color"]
-                    ],
-                )
-                fig.update_layout(template="plotly_dark")
-                st.plotly_chart(fig, use_container_width=True)
-                st.markdown("---")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        _render_folium_map(base_std[base_std[fert_col].astype(str) == "High"], "High Fertility Map")
+                    with c2:
+                        _render_folium_map(base_std[base_std[fert_col].astype(str) == "Moderate"], "Moderate Fertility Map")
 
-        st.subheader("Correlation Matrix")
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        if numeric_cols:
-            # Pick a reasonable default subset so the heatmap stays readable
-            exclude_like = {"latitude", "lat", "longitude", "lon", "lng", "long", "longitude_2"}
-            default_cols = [c for c in numeric_cols if c.strip().lower() not in exclude_like][:12]
-            selected_cols = st.multiselect(
-                "Select numeric columns to include (fewer columns = clearer heatmap)",
-                options=numeric_cols,
-                default=default_cols if len(default_cols) >= 2 else numeric_cols[: min(12, len(numeric_cols))],
-            )
+        # =====================
+        # 🧩 Clusters
+        # =====================
+        with tab_clusters:
+            st.subheader("KMeans Clustering (Notebook-style)")
+            st.caption("Clusters reveal natural groupings in your soil profiles.")
 
-            if selected_cols is None or len(selected_cols) < 2:
-                st.info("Select at least 2 numeric columns to view the correlation matrix.")
-            else:
-                show_values = st.checkbox(
-                    "Show correlation values on cells (can get cluttered with many columns)",
-                    value=False,
-                )
+            try:
+                import seaborn as sns
+                _has_sns3 = True
+            except Exception:
+                sns = None
+                _has_sns3 = False
 
-                corr = df[selected_cols].corr()
-                corr = corr.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            features = []
+            for c in ["pH", "ph", "PH"]:
+                if c in df.columns:
+                    features.append(c)
+                    break
+            for c in ["Nitrogen", "Phosphorus", "Potassium", "Moisture", "Organic Matter", "Organic_Matter"]:
+                if c in df.columns and c not in features:
+                    features.append(c)
 
-                fig_corr = px.imshow(
-                    corr,
-                    color_continuous_scale=px.colors.sequential.Viridis,
-                    zmin=-1,
-                    zmax=1,
-                    aspect="auto",
-                    title="Correlation Heatmap",
-                )
-
-                # Improve readability
-                fig_corr.update_layout(
-                    template="plotly_dark",
-                    height=650,
-                    margin=dict(l=40, r=40, t=70, b=40),
-                )
-                fig_corr.update_xaxes(tickangle=45, tickfont=dict(size=12))
-                fig_corr.update_yaxes(tickfont=dict(size=12))
-
-                # Only overlay numbers when requested AND not too many columns
-                if show_values and len(selected_cols) <= 15:
-                    txt = corr.round(2).astype(str).values
-                    fig_corr.update_traces(
-                        text=txt,
-                        texttemplate="%{text}",
-                        textfont=dict(color="white", size=10),
-                    )
-                else:
-                    fig_corr.update_traces(text=None)
-
-                st.plotly_chart(fig_corr, use_container_width=True)
-        else:
-            st.info("No numeric columns available for correlation matrix.")
-        st.markdown("---")
-
-        
-
-        # ==========================
-        # 📒 Dean's Notebook Visuals (ported from Dean's.ipynb)
-        # Adds notebook-style EDA charts WITHOUT removing your existing visuals.
-        # ==========================
-        st.markdown("---")
-        st.subheader("📒 Dean’s Notebook Visuals")
-        st.caption(
-            "Notebook-style EDA charts (pairplots, histograms+KDE, boxplots, correlated-pair scatters, geo scatters, folium fertility maps, and KMeans cluster pairplot)."
-        )
-
-        # Local imports (keeps app startup light)
-        import matplotlib.pyplot as plt
-        try:
-            import seaborn as sns
-            _has_sns = True
-        except Exception:
-            sns = None
-            _has_sns = False
-
-        def _pick_col(_df, candidates):
-            for c in candidates:
-                if c in _df.columns:
-                    return c
-            return None
-
-        # Notebook vs app naming compatibility
-        fert_col = _pick_col(df, ["fertility_class", "Fertility_Level"])
-        lat_col = _pick_col(df, ["latitude", "Latitude"])
-        lon_col = _pick_col(df, ["longitude_1", "Longitude", "longitude", "lon", "lng"])
-
-        # Notebook feature set (use whichever exists in this dataset)
-        features = []
-        for c in ["pH", "ph", "PH"]:
-            if c in df.columns:
-                features.append(c)
-                break
-        for c in ["Nitrogen", "Phosphorus", "Potassium", "Moisture", "Organic Matter", "Organic_Matter"]:
-            if c in df.columns and c not in features:
-                features.append(c)
-
-        # Ensure numeric for these visualizations
-        for c in features:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-
-        tabs = st.tabs([
-            "1) Pairplot",
-            "2) Histograms (KDE)",
-            "3) Boxplots by Fertility",
-            "4) Correlated Pairs",
-            "5) Geo Scatter (N/P/K)",
-            "6) Folium Fertility Maps",
-            "7) KMeans Pairplot",
-        ])
-
-        # 1) Pairplot
-        with tabs[0]:
-            st.markdown("### Pairwise Relationships (Pairplot)")
-            if not _has_sns:
-                st.info("Seaborn is not installed in this environment, so pairplots are unavailable.")
-            elif len(features) < 2:
-                st.info("Not enough numeric columns available for a pairplot.")
-            else:
-                sample_n = st.slider(
-                    "Sample size (pairplot can be slow)",
-                    min_value=200,
-                    max_value=6000,
-                    value=1500,
-                    step=100,
-                )
-                d = df[features].dropna()
-                if len(d) > sample_n:
-                    d = d.sample(sample_n, random_state=42)
-                g = sns.pairplot(d, diag_kind="kde")
-                st.pyplot(g.figure, clear_figure=True)
-                st.caption(
-                    "Pairplot from the notebook: shows relationships between every numeric feature; diagonal uses KDE curves."
-                )
-
-        # 2) Histograms with KDE (loop over features)
-        with tabs[1]:
-            st.markdown("### Distributions (Histogram + KDE) — per feature")
-            if not _has_sns:
-                st.info("Seaborn is not installed in this environment, so KDE histograms are unavailable.")
-            elif not features:
-                st.info("No notebook numeric features found in this dataset.")
-            else:
-                chosen = st.multiselect("Choose features", features, default=features)
-                for f in chosen:
-                    x = df[f].dropna()
-                    if x.empty:
-                        continue
-                    fig, ax = plt.subplots(figsize=(9, 4))
-                    sns.histplot(data=df, x=f, kde=True, ax=ax)
-                    ax.set_title(f"Distribution of {f}")
-                    ax.set_xlabel(f)
-                    ax.set_ylabel("Frequency")
-                    st.pyplot(fig, clear_figure=True)
-                    st.caption(
-                        f"Notebook loop chart: histogram + KDE for **{f}** to show skew, spread, and outliers."
-                    )
-
-        # 3) Boxplots by fertility class (loop over features)
-        with tabs[2]:
-            st.markdown("### Boxplots by Fertility Class — per feature")
-            if not _has_sns:
-                st.info("Seaborn is not installed in this environment, so boxplots are unavailable.")
-            elif fert_col is None:
-                st.info("Fertility label not found. Expected `fertility_class` or `Fertility_Level`.")
-            elif not features:
-                st.info("No notebook numeric features found in this dataset.")
-            else:
-                chosen = st.multiselect("Choose features", features, default=features, key="boxplot_features")
-                for f in chosen:
-                    dtmp = df[[fert_col, f]].dropna()
-                    if dtmp.empty:
-                        continue
-                    fig, ax = plt.subplots(figsize=(10, 4))
-                    sns.boxplot(data=dtmp, x=fert_col, y=f, ax=ax)
-                    ax.set_title(f"{f} by {fert_col}")
-                    ax.set_xlabel(fert_col)
-                    ax.set_ylabel(f)
-                    st.pyplot(fig, clear_figure=True)
-                    st.caption(
-                        f"Notebook loop chart: compares **{f}** across fertility groups to reveal separation and variability."
-                    )
-
-        # 4) Correlated pair scatterplots (auto-find pairs)
-        with tabs[3]:
-            st.markdown("### Scatterplots for Correlated Feature Pairs")
-            if not _has_sns:
-                st.info("Seaborn is not installed in this environment, so scatterplots are unavailable.")
-            elif len(features) < 2:
-                st.info("Need at least 2 numeric features to compute correlations.")
-            else:
-                threshold = st.slider("Correlation threshold (abs)", 0.05, 0.95, 0.10, 0.05)
-                topk = st.slider("Max pairs to plot", 1, 25, 10, 1)
-
-                corr = df[features].corr(numeric_only=True)
-                pairs = (
-                    corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
-                    .stack()
-                    .reset_index()
-                )
-                pairs.columns = ["Feature1", "Feature2", "Correlation"]
-                pairs["AbsCorr"] = pairs["Correlation"].abs()
-                pairs = pairs[pairs["AbsCorr"] >= threshold].sort_values("AbsCorr", ascending=False).head(topk)
-
-                if pairs.empty:
-                    st.info("No correlated pairs meet the threshold.")
-                else:
-                    st.dataframe(pairs[["Feature1", "Feature2", "Correlation"]], use_container_width=True)
-                    for _, r in pairs.iterrows():
-                        f1, f2, cval = r["Feature1"], r["Feature2"], r["Correlation"]
-                        dtmp = df[[f1, f2]].dropna()
-                        fig, ax = plt.subplots(figsize=(8, 5))
-                        sns.scatterplot(data=dtmp, x=f1, y=f2, ax=ax, alpha=0.7)
-                        ax.set_title(f"{f2} vs {f1} (corr={cval:.2f})")
-                        st.pyplot(fig, clear_figure=True)
-                        st.caption(
-                            f"Notebook chart: scatterplot for correlated pair **{f1} ↔ {f2}** to visually confirm the trend."
-                        )
-
-        # 5) Geo scatter (N/P/K)
-        with tabs[4]:
-            st.markdown("### Geographic Distribution of Nutrients (Scatter)")
-            if not _has_sns:
-                st.info("Seaborn is not installed in this environment, so geo scatterplots are unavailable.")
-            elif lat_col is None or lon_col is None:
-                st.info("Latitude/Longitude not found (expected `latitude`/`Latitude` and `longitude_1`/`Longitude`).")
-            else:
-                nutrients = [c for c in ["Nitrogen", "Phosphorus", "Potassium"] if c in df.columns]
-                if not nutrients:
-                    st.info("N/P/K columns not found.")
-                else:
-                    for n in nutrients:
-                        dtmp = df[[lat_col, lon_col, n]].dropna()
-                        if dtmp.empty:
-                            continue
-                        fig, ax = plt.subplots(figsize=(10, 6))
-                        sns.scatterplot(
-                            data=dtmp,
-                            x=lon_col,
-                            y=lat_col,
-                            size=n,
-                            sizes=(20, 250),
-                            alpha=0.7,
-                            ax=ax,
-                        )
-                        ax.set_title(f"Geographical Distribution of {n}")
-                        ax.set_xlabel("Longitude")
-                        ax.set_ylabel("Latitude")
-                        ax.grid(True)
-                        st.pyplot(fig, clear_figure=True)
-                        st.caption(
-                            f"Notebook chart: plots **{n}** spatially; point size reflects concentration."
-                        )
-
-        # 6) Folium fertility maps (overall + per class)
-        with tabs[5]:
-            st.markdown("### Folium Fertility Maps (Notebook-style)")
-            if fert_col is None:
-                st.info("Fertility label not found (expected `fertility_class` or `Fertility_Level`).")
-            elif lat_col is None or lon_col is None:
-                st.info("Latitude/Longitude not found for folium mapping.")
-            else:
-                color_map = {"Low": "red", "Moderate": "orange", "High": "green"}
-
-                def _render_folium_map(sub_df, title):
-                    """Render notebook-style fertility maps, but hide offshore/out-of-bounds points.
-
-                    We reuse the same land-only filtering used elsewhere in the app so dots in the sea
-                    (or outside Mindanao bounds) are removed.
-                    """
-                    if sub_df.empty:
-                        st.warning(f"No rows available for: {title}")
-                        return
-
-                    # Apply the same land/sea filtering used by the main system map.
-                    # _filter_mindanao_land_only expects columns named Latitude/Longitude.
-                    tmp = sub_df.copy()
-                    tmp = tmp.rename(columns={lat_col: "Latitude", lon_col: "Longitude"})
-                    tmp = _filter_mindanao_land_only(tmp)
-                    tmp = tmp.dropna(subset=["Latitude", "Longitude", fert_col])
-
-                    if tmp.empty:
-                        st.info(f"No on-land points to display for: {title}")
-                        return
-
-                    center_lat = float(tmp["Latitude"].mean())
-                    center_lon = float(tmp["Longitude"].mean())
-
-                    # Match the base system map style
-                    m = folium.Map(
-                        location=[center_lat, center_lon],
-                        zoom_start=7,
-                        tiles="CartoDB dark_matter",
-                        control_scale=True,
-                    )
-
-                    # Fit bounds tightly to filtered points (hides stray offshore points)
-                    min_lat, max_lat = float(tmp["Latitude"].min()), float(tmp["Latitude"].max())
-                    min_lon, max_lon = float(tmp["Longitude"].min()), float(tmp["Longitude"].max())
-                    m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
-                    m.options["maxBounds"] = [[min_lat, min_lon], [max_lat, max_lon]]
-
-                    for _, row in tmp.iterrows():
-                        fert = str(row[fert_col]).strip().title()
-                        col = color_map.get(fert, "blue")
-                        popup = (
-                            f"<b>Fertility:</b> {fert}<br>"
-                            f"<b>N:</b> {row.get('Nitrogen', np.nan)}<br>"
-                            f"<b>P:</b> {row.get('Phosphorus', np.nan)}<br>"
-                            f"<b>K:</b> {row.get('Potassium', np.nan)}"
-                        )
-                        folium.CircleMarker(
-                            location=[float(row["Latitude"]), float(row["Longitude"])],
-                            radius=5,
-                            color=col,
-                            fill=True,
-                            fill_color=col,
-                            fill_opacity=0.75,
-                            weight=0,
-                            popup=folium.Popup(popup, max_width=300),
-                        ).add_to(m)
-
-                    st.markdown(f"**{title}**")
-                    st_folium(m, width=1024, height=520)
-                    st.caption(
-                        "Notebook folium map: same as the notebook, but offshore/out-of-range dots are filtered out so only land points remain."
-                    )
-
-                base = df.dropna(subset=[lat_col, lon_col, fert_col]).copy()
-                # Note: filtering happens inside _render_folium_map to match the main system behavior
-                _render_folium_map(base, "Overall Fertility Map (All Classes)")
-
-                c1, c2 = st.columns(2)
-                with c1:
-                    _render_folium_map(base[base[fert_col].astype(str) == "High"], "High Fertility Map")
-                with c2:
-                    _render_folium_map(base[base[fert_col].astype(str) == "Moderate"], "Moderate Fertility Map")
-
-        # 7) KMeans cluster pairplot
-        with tabs[6]:
-            st.markdown("### KMeans Clusters (Pairplot colored by cluster)")
-            if not _has_sns:
-                st.info("Seaborn is not installed in this environment, so KMeans pairplot is unavailable.")
+            if not _has_sns3:
+                st.info("Seaborn is not installed, so cluster pairplot is unavailable.")
             elif len(features) < 2:
                 st.info("Not enough features for KMeans + pairplot.")
             else:
-                k = st.slider("KMeans clusters (K)", 2, 8, 3, 1)
+                k = st.slider("KMeans clusters (K)", 2, 8, 3, 1, key="kmeans_k")
+                max_n = 1500 if performance_mode else 6000
                 sample_n = st.slider(
                     "Sample size (cluster pairplot)",
                     min_value=200,
-                    max_value=6000,
-                    value=1500,
+                    max_value=max_n,
+                    value=min(1500, max_n),
                     step=100,
                     key="kmeans_sample",
                 )
 
                 X = df[features].copy()
+                X = X.apply(pd.to_numeric, errors="coerce")
                 X = X.fillna(X.median(numeric_only=True))
                 Xs = StandardScaler().fit_transform(X)
 
@@ -1713,11 +1728,7 @@ elif page == "📊 Visualization":
 
                 g = sns.pairplot(d, hue="Cluster", diag_kind="kde")
                 st.pyplot(g.figure, clear_figure=True)
-                st.caption(
-                    "Notebook chart: pairplot colored by KMeans cluster to reveal natural groupings in the data."
-                )
-
-        # === Location map using Latitude/Longitude/Province, auto-focused on data in PH === paste here
+                st.caption("Pairplot colored by KMeans cluster. Use it to see which variables separate clusters.")
 
 
 elif page == "📈 Results":
