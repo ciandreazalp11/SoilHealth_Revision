@@ -1607,15 +1607,45 @@ elif page == "📊 Visualization":
                 color_map = {"Low": "red", "Moderate": "orange", "High": "green"}
 
                 def _render_folium_map(sub_df, title):
+                    """Render notebook-style fertility maps, but hide offshore/out-of-bounds points.
+
+                    We reuse the same land-only filtering used elsewhere in the app so dots in the sea
+                    (or outside Mindanao bounds) are removed.
+                    """
                     if sub_df.empty:
                         st.warning(f"No rows available for: {title}")
                         return
-                    center_lat = float(sub_df[lat_col].mean())
-                    center_lon = float(sub_df[lon_col].mean())
-                    m = folium.Map(location=[center_lat, center_lon], zoom_start=8)
 
-                    for _, row in sub_df.iterrows():
-                        fert = str(row[fert_col])
+                    # Apply the same land/sea filtering used by the main system map.
+                    # _filter_mindanao_land_only expects columns named Latitude/Longitude.
+                    tmp = sub_df.copy()
+                    tmp = tmp.rename(columns={lat_col: "Latitude", lon_col: "Longitude"})
+                    tmp = _filter_mindanao_land_only(tmp)
+                    tmp = tmp.dropna(subset=["Latitude", "Longitude", fert_col])
+
+                    if tmp.empty:
+                        st.info(f"No on-land points to display for: {title}")
+                        return
+
+                    center_lat = float(tmp["Latitude"].mean())
+                    center_lon = float(tmp["Longitude"].mean())
+
+                    # Match the base system map style
+                    m = folium.Map(
+                        location=[center_lat, center_lon],
+                        zoom_start=7,
+                        tiles="CartoDB dark_matter",
+                        control_scale=True,
+                    )
+
+                    # Fit bounds tightly to filtered points (hides stray offshore points)
+                    min_lat, max_lat = float(tmp["Latitude"].min()), float(tmp["Latitude"].max())
+                    min_lon, max_lon = float(tmp["Longitude"].min()), float(tmp["Longitude"].max())
+                    m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
+                    m.options["maxBounds"] = [[min_lat, min_lon], [max_lat, max_lon]]
+
+                    for _, row in tmp.iterrows():
+                        fert = str(row[fert_col]).strip().title()
                         col = color_map.get(fert, "blue")
                         popup = (
                             f"<b>Fertility:</b> {fert}<br>"
@@ -1624,22 +1654,24 @@ elif page == "📊 Visualization":
                             f"<b>K:</b> {row.get('Potassium', np.nan)}"
                         )
                         folium.CircleMarker(
-                            location=[row[lat_col], row[lon_col]],
+                            location=[float(row["Latitude"]), float(row["Longitude"])],
                             radius=5,
                             color=col,
                             fill=True,
                             fill_color=col,
-                            fill_opacity=0.7,
+                            fill_opacity=0.75,
+                            weight=0,
                             popup=folium.Popup(popup, max_width=300),
                         ).add_to(m)
 
                     st.markdown(f"**{title}**")
                     st_folium(m, width=1024, height=520)
                     st.caption(
-                        "Notebook folium map: interactive points with popups showing Fertility and N/P/K values."
+                        "Notebook folium map: same as the notebook, but offshore/out-of-range dots are filtered out so only land points remain."
                     )
 
                 base = df.dropna(subset=[lat_col, lon_col, fert_col]).copy()
+                # Note: filtering happens inside _render_folium_map to match the main system behavior
                 _render_folium_map(base, "Overall Fertility Map (All Classes)")
 
                 c1, c2 = st.columns(2)
