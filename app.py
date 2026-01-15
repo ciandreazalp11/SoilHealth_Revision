@@ -24,8 +24,6 @@ import joblib
 import time
 import base64
 from PIL import Image
-import matplotlib.pyplot as plt
-import seaborn as sns
 import warnings
 import re
 
@@ -1342,22 +1340,6 @@ elif page == "📊 Visualization":
                 st.plotly_chart(fig, use_container_width=True)
                 st.markdown("---")
 
-
-        # Additional notebook-style visualizations: boxplots by fertility level (from Colab)
-        if "Fertility_Level" in df.columns and param_cols:
-            st.subheader("Distributions by Fertility Level (from notebook)")
-            with st.expander("Show boxplots by fertility class", expanded=False):
-                cat_col = "Fertility_Level"
-                for feature in param_cols:
-                    fig_box, ax_box = plt.subplots(figsize=(6, 4))
-                    sns.boxplot(data=df, x=cat_col, y=feature, ax=ax_box)
-                    ax_box.set_title(f"Distribution of {feature} by {cat_col}")
-                    ax_box.set_xlabel(cat_col)
-                    ax_box.set_ylabel(feature)
-                    st.pyplot(fig_box)
-        elif "Fertility_Level" not in df.columns:
-            st.info("Column 'Fertility_Level' not found. Boxplots by fertility class are skipped.")
-
         st.subheader("Correlation Matrix")
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         if numeric_cols:
@@ -1411,74 +1393,297 @@ elif page == "📊 Visualization":
                     fig_corr.update_traces(text=None)
 
                 st.plotly_chart(fig_corr, use_container_width=True)
-                # Scatter plots for most correlated feature pairs (from notebook)
-                with st.expander("Scatter plots for most correlated feature pairs (from notebook)", expanded=False):
-                    threshold = st.slider(
-                        "Minimum absolute correlation to include",
-                        min_value=0.0,
-                        max_value=1.0,
-                        value=0.5,
-                        step=0.05,
-                        key="corr_pair_threshold",
-                    )
-                    max_pairs = st.slider(
-                        "Maximum number of pairs to show",
-                        min_value=1,
-                        max_value=10,
-                        value=5,
-                        key="corr_pair_max_pairs",
-                    )
-
-                    import numpy as _np
-
-                    corr_abs = corr.abs()
-                    # upper triangle mask to avoid duplicate pairs
-                    mask = _np.triu(_np.ones_like(corr_abs, dtype=bool), k=1)
-                    corr_long = corr_abs.where(mask)
-
-                    pairs = (
-                        corr_long.stack()
-                        .reset_index()
-                        .rename(columns={"level_0": "Feature1", "level_1": "Feature2", 0: "Correlation"})
-                    )
-                    pairs = pairs[pairs["Correlation"] >= threshold].sort_values(
-                        "Correlation", ascending=False
-                    ).head(max_pairs)
-
-                    if pairs.empty:
-                        st.info("No feature pairs meet the selected threshold.")
-                    else:
-                        for _, row in pairs.iterrows():
-                            f1, f2, cval = row["Feature1"], row["Feature2"], row["Correlation"]
-                            fig_scatter = px.scatter(
-                                df,
-                                x=f1,
-                                y=f2,
-                                trendline="ols",
-                                title=f"{f1} vs {f2} (|corr| = {cval:.2f})",
-                            )
-                            st.plotly_chart(fig_scatter, use_container_width=True)
-
-                # Optional Seaborn pairplot (from notebook)
-                show_pairplot = st.checkbox(
-                    "Show Seaborn pairplot for selected numeric features (from notebook)",
-                    value=False,
-                )
-                if show_pairplot:
-                    pair_df = df[selected_cols].dropna()
-                    if pair_df.shape[1] > 1:
-                        g = sns.pairplot(pair_df, diag_kind="kde")
-                        g.fig.suptitle(
-                            "Pairwise relationships between selected numerical features",
-                            y=1.02,
-                        )
-                        st.pyplot(g.fig)
-                    else:
-                        st.info("Need at least 2 numeric columns for a pairplot.")
-
         else:
             st.info("No numeric columns available for correlation matrix.")
         st.markdown("---")
+
+        
+
+        # ==========================
+        # 📒 Dean's Notebook Visuals (ported from Dean's.ipynb)
+        # Adds notebook-style EDA charts WITHOUT removing your existing visuals.
+        # ==========================
+        st.markdown("---")
+        st.subheader("📒 Dean’s Notebook Visuals")
+        st.caption(
+            "Notebook-style EDA charts (pairplots, histograms+KDE, boxplots, correlated-pair scatters, geo scatters, folium fertility maps, and KMeans cluster pairplot)."
+        )
+
+        # Local imports (keeps app startup light)
+        import matplotlib.pyplot as plt
+        try:
+            import seaborn as sns
+            _has_sns = True
+        except Exception:
+            sns = None
+            _has_sns = False
+
+        def _pick_col(_df, candidates):
+            for c in candidates:
+                if c in _df.columns:
+                    return c
+            return None
+
+        # Notebook vs app naming compatibility
+        fert_col = _pick_col(df, ["fertility_class", "Fertility_Level"])
+        lat_col = _pick_col(df, ["latitude", "Latitude"])
+        lon_col = _pick_col(df, ["longitude_1", "Longitude", "longitude", "lon", "lng"])
+
+        # Notebook feature set (use whichever exists in this dataset)
+        features = []
+        for c in ["pH", "ph", "PH"]:
+            if c in df.columns:
+                features.append(c)
+                break
+        for c in ["Nitrogen", "Phosphorus", "Potassium", "Moisture", "Organic Matter", "Organic_Matter"]:
+            if c in df.columns and c not in features:
+                features.append(c)
+
+        # Ensure numeric for these visualizations
+        for c in features:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+        tabs = st.tabs([
+            "1) Pairplot",
+            "2) Histograms (KDE)",
+            "3) Boxplots by Fertility",
+            "4) Correlated Pairs",
+            "5) Geo Scatter (N/P/K)",
+            "6) Folium Fertility Maps",
+            "7) KMeans Pairplot",
+        ])
+
+        # 1) Pairplot
+        with tabs[0]:
+            st.markdown("### Pairwise Relationships (Pairplot)")
+            if not _has_sns:
+                st.info("Seaborn is not installed in this environment, so pairplots are unavailable.")
+            elif len(features) < 2:
+                st.info("Not enough numeric columns available for a pairplot.")
+            else:
+                sample_n = st.slider(
+                    "Sample size (pairplot can be slow)",
+                    min_value=200,
+                    max_value=6000,
+                    value=1500,
+                    step=100,
+                )
+                d = df[features].dropna()
+                if len(d) > sample_n:
+                    d = d.sample(sample_n, random_state=42)
+                g = sns.pairplot(d, diag_kind="kde")
+                st.pyplot(g.figure, clear_figure=True)
+                st.caption(
+                    "Pairplot from the notebook: shows relationships between every numeric feature; diagonal uses KDE curves."
+                )
+
+        # 2) Histograms with KDE (loop over features)
+        with tabs[1]:
+            st.markdown("### Distributions (Histogram + KDE) — per feature")
+            if not _has_sns:
+                st.info("Seaborn is not installed in this environment, so KDE histograms are unavailable.")
+            elif not features:
+                st.info("No notebook numeric features found in this dataset.")
+            else:
+                chosen = st.multiselect("Choose features", features, default=features)
+                for f in chosen:
+                    x = df[f].dropna()
+                    if x.empty:
+                        continue
+                    fig, ax = plt.subplots(figsize=(9, 4))
+                    sns.histplot(data=df, x=f, kde=True, ax=ax)
+                    ax.set_title(f"Distribution of {f}")
+                    ax.set_xlabel(f)
+                    ax.set_ylabel("Frequency")
+                    st.pyplot(fig, clear_figure=True)
+                    st.caption(
+                        f"Notebook loop chart: histogram + KDE for **{f}** to show skew, spread, and outliers."
+                    )
+
+        # 3) Boxplots by fertility class (loop over features)
+        with tabs[2]:
+            st.markdown("### Boxplots by Fertility Class — per feature")
+            if not _has_sns:
+                st.info("Seaborn is not installed in this environment, so boxplots are unavailable.")
+            elif fert_col is None:
+                st.info("Fertility label not found. Expected `fertility_class` or `Fertility_Level`.")
+            elif not features:
+                st.info("No notebook numeric features found in this dataset.")
+            else:
+                chosen = st.multiselect("Choose features", features, default=features, key="boxplot_features")
+                for f in chosen:
+                    dtmp = df[[fert_col, f]].dropna()
+                    if dtmp.empty:
+                        continue
+                    fig, ax = plt.subplots(figsize=(10, 4))
+                    sns.boxplot(data=dtmp, x=fert_col, y=f, ax=ax)
+                    ax.set_title(f"{f} by {fert_col}")
+                    ax.set_xlabel(fert_col)
+                    ax.set_ylabel(f)
+                    st.pyplot(fig, clear_figure=True)
+                    st.caption(
+                        f"Notebook loop chart: compares **{f}** across fertility groups to reveal separation and variability."
+                    )
+
+        # 4) Correlated pair scatterplots (auto-find pairs)
+        with tabs[3]:
+            st.markdown("### Scatterplots for Correlated Feature Pairs")
+            if not _has_sns:
+                st.info("Seaborn is not installed in this environment, so scatterplots are unavailable.")
+            elif len(features) < 2:
+                st.info("Need at least 2 numeric features to compute correlations.")
+            else:
+                threshold = st.slider("Correlation threshold (abs)", 0.05, 0.95, 0.10, 0.05)
+                topk = st.slider("Max pairs to plot", 1, 25, 10, 1)
+
+                corr = df[features].corr(numeric_only=True)
+                pairs = (
+                    corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
+                    .stack()
+                    .reset_index()
+                )
+                pairs.columns = ["Feature1", "Feature2", "Correlation"]
+                pairs["AbsCorr"] = pairs["Correlation"].abs()
+                pairs = pairs[pairs["AbsCorr"] >= threshold].sort_values("AbsCorr", ascending=False).head(topk)
+
+                if pairs.empty:
+                    st.info("No correlated pairs meet the threshold.")
+                else:
+                    st.dataframe(pairs[["Feature1", "Feature2", "Correlation"]], use_container_width=True)
+                    for _, r in pairs.iterrows():
+                        f1, f2, cval = r["Feature1"], r["Feature2"], r["Correlation"]
+                        dtmp = df[[f1, f2]].dropna()
+                        fig, ax = plt.subplots(figsize=(8, 5))
+                        sns.scatterplot(data=dtmp, x=f1, y=f2, ax=ax, alpha=0.7)
+                        ax.set_title(f"{f2} vs {f1} (corr={cval:.2f})")
+                        st.pyplot(fig, clear_figure=True)
+                        st.caption(
+                            f"Notebook chart: scatterplot for correlated pair **{f1} ↔ {f2}** to visually confirm the trend."
+                        )
+
+        # 5) Geo scatter (N/P/K)
+        with tabs[4]:
+            st.markdown("### Geographic Distribution of Nutrients (Scatter)")
+            if not _has_sns:
+                st.info("Seaborn is not installed in this environment, so geo scatterplots are unavailable.")
+            elif lat_col is None or lon_col is None:
+                st.info("Latitude/Longitude not found (expected `latitude`/`Latitude` and `longitude_1`/`Longitude`).")
+            else:
+                nutrients = [c for c in ["Nitrogen", "Phosphorus", "Potassium"] if c in df.columns]
+                if not nutrients:
+                    st.info("N/P/K columns not found.")
+                else:
+                    for n in nutrients:
+                        dtmp = df[[lat_col, lon_col, n]].dropna()
+                        if dtmp.empty:
+                            continue
+                        fig, ax = plt.subplots(figsize=(10, 6))
+                        sns.scatterplot(
+                            data=dtmp,
+                            x=lon_col,
+                            y=lat_col,
+                            size=n,
+                            sizes=(20, 250),
+                            alpha=0.7,
+                            ax=ax,
+                        )
+                        ax.set_title(f"Geographical Distribution of {n}")
+                        ax.set_xlabel("Longitude")
+                        ax.set_ylabel("Latitude")
+                        ax.grid(True)
+                        st.pyplot(fig, clear_figure=True)
+                        st.caption(
+                            f"Notebook chart: plots **{n}** spatially; point size reflects concentration."
+                        )
+
+        # 6) Folium fertility maps (overall + per class)
+        with tabs[5]:
+            st.markdown("### Folium Fertility Maps (Notebook-style)")
+            if fert_col is None:
+                st.info("Fertility label not found (expected `fertility_class` or `Fertility_Level`).")
+            elif lat_col is None or lon_col is None:
+                st.info("Latitude/Longitude not found for folium mapping.")
+            else:
+                color_map = {"Low": "red", "Moderate": "orange", "High": "green"}
+
+                def _render_folium_map(sub_df, title):
+                    if sub_df.empty:
+                        st.warning(f"No rows available for: {title}")
+                        return
+                    center_lat = float(sub_df[lat_col].mean())
+                    center_lon = float(sub_df[lon_col].mean())
+                    m = folium.Map(location=[center_lat, center_lon], zoom_start=8)
+
+                    for _, row in sub_df.iterrows():
+                        fert = str(row[fert_col])
+                        col = color_map.get(fert, "blue")
+                        popup = (
+                            f"<b>Fertility:</b> {fert}<br>"
+                            f"<b>N:</b> {row.get('Nitrogen', np.nan)}<br>"
+                            f"<b>P:</b> {row.get('Phosphorus', np.nan)}<br>"
+                            f"<b>K:</b> {row.get('Potassium', np.nan)}"
+                        )
+                        folium.CircleMarker(
+                            location=[row[lat_col], row[lon_col]],
+                            radius=5,
+                            color=col,
+                            fill=True,
+                            fill_color=col,
+                            fill_opacity=0.7,
+                            popup=folium.Popup(popup, max_width=300),
+                        ).add_to(m)
+
+                    st.markdown(f"**{title}**")
+                    st_folium(m, width=1024, height=520)
+                    st.caption(
+                        "Notebook folium map: interactive points with popups showing Fertility and N/P/K values."
+                    )
+
+                base = df.dropna(subset=[lat_col, lon_col, fert_col]).copy()
+                _render_folium_map(base, "Overall Fertility Map (All Classes)")
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    _render_folium_map(base[base[fert_col].astype(str) == "High"], "High Fertility Map")
+                with c2:
+                    _render_folium_map(base[base[fert_col].astype(str) == "Moderate"], "Moderate Fertility Map")
+
+        # 7) KMeans cluster pairplot
+        with tabs[6]:
+            st.markdown("### KMeans Clusters (Pairplot colored by cluster)")
+            if not _has_sns:
+                st.info("Seaborn is not installed in this environment, so KMeans pairplot is unavailable.")
+            elif len(features) < 2:
+                st.info("Not enough features for KMeans + pairplot.")
+            else:
+                k = st.slider("KMeans clusters (K)", 2, 8, 3, 1)
+                sample_n = st.slider(
+                    "Sample size (cluster pairplot)",
+                    min_value=200,
+                    max_value=6000,
+                    value=1500,
+                    step=100,
+                    key="kmeans_sample",
+                )
+
+                X = df[features].copy()
+                X = X.fillna(X.median(numeric_only=True))
+                Xs = StandardScaler().fit_transform(X)
+
+                km = KMeans(n_clusters=k, random_state=42, n_init=10)
+                labels = km.fit_predict(Xs)
+
+                d = df[features].copy()
+                d["Cluster"] = labels
+                d = d.dropna()
+                if len(d) > sample_n:
+                    d = d.sample(sample_n, random_state=42)
+
+                g = sns.pairplot(d, hue="Cluster", diag_kind="kde")
+                st.pyplot(g.figure, clear_figure=True)
+                st.caption(
+                    "Notebook chart: pairplot colored by KMeans cluster to reveal natural groupings in the data."
+                )
 
         # === Location map using Latitude/Longitude/Province, auto-focused on data in PH === paste here
 
