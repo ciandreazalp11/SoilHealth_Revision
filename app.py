@@ -2,6 +2,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import folium
+from folium.plugins import HeatMap, FastMarkerCluster
+from streamlit_folium import st_folium
 from streamlit_option_menu import option_menu
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
@@ -25,6 +28,103 @@ import warnings
 import re
 
 warnings.filterwarnings("ignore", category=UserWarning)
+
+
+# =========================
+# Land-only filter (Mindanao) for Folium map
+# Uses Natural Earth 10m land polygons (downloaded once + cached).
+# Falls back to a conservative bounding-box filter if geopandas/shapely isn't available.
+# =========================
+
+import os
+import io
+import zipfile
+from pathlib import Path
+
+try:
+    import geopandas as gpd
+    from shapely.geometry import Point, box
+    from shapely.ops import unary_union
+    from shapely.prepared import prep
+except Exception:
+    gpd = None
+    Point = None
+    box = None
+    unary_union = None
+    prep = None
+
+@st.cache_resource
+def _get_mindanao_land_polygon():
+    """Return a prepared Shapely polygon approximating Mindanao LAND area only.
+    Downloads Natural Earth 10m land shapefile if needed and caches it locally.
+    """
+    if gpd is None or box is None or prep is None:
+        return None
+
+    cache_dir = Path.home() / ".cache" / "soil_health_app"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    zip_path = cache_dir / "ne_10m_land.zip"
+    shp_path = cache_dir / "ne_10m_land.shp"
+
+    if not shp_path.exists():
+        # Download Natural Earth 10m land (public domain)
+        import requests  # local import to avoid hard dependency at import time
+        url = "https://naturalearth.s3.amazonaws.com/10m_physical/ne_10m_land.zip"
+        r = requests.get(url, timeout=60)
+        r.raise_for_status()
+        zip_path.write_bytes(r.content)
+
+        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+            zf.extractall(cache_dir)
+
+    land = gpd.read_file(str(shp_path))
+
+    # Mindanao broad bbox (includes some sea, removed by land polygon)
+    mindanao_bbox = box(121.0, 4.0, 128.5, 11.5)
+
+    clipped = land[land.intersects(mindanao_bbox)].copy()
+    if clipped.empty:
+        return None
+
+    geom = unary_union(clipped.geometry)
+    geom = geom.intersection(mindanao_bbox)
+
+    # Keep largest polygon piece (main landmass in this bbox)
+    if geom.geom_type == "MultiPolygon":
+        geom = max(geom.geoms, key=lambda g: g.area)
+
+    return prep(geom)
+
+def _filter_mindanao_land_only(df_in: pd.DataFrame) -> pd.DataFrame:
+    """Hide points that are NOT on Mindanao land (automatic sea removal).
+    Requires Latitude/Longitude columns.
+    Falls back to conservative bbox if land polygon isn't available.
+    """
+    df0 = df_in.dropna(subset=["Latitude", "Longitude"]).copy()
+
+    # Fast pre-filter (keeps runtime low even on big datasets)
+    df0 = df0[
+        (df0["Latitude"].between(4.0, 11.5)) &
+        (df0["Longitude"].between(121.0, 128.5))
+    ]
+    if df0.empty:
+        return df0
+
+    prepared_land = _get_mindanao_land_polygon()
+    if prepared_land is None or Point is None:
+        # Fallback: tight "land-safe" bbox (may remove some coastal land points)
+        return df0[
+            (df0["Latitude"].between(5.0, 10.5)) &
+            (df0["Longitude"].between(121.5, 127.3))
+        ]
+
+    # Strict point-in-land test
+    keep_mask = []
+    for lat, lon in zip(df0["Latitude"].astype(float), df0["Longitude"].astype(float)):
+        keep_mask.append(prepared_land.contains(Point(lon, lat)))
+
+    return df0.loc[keep_mask]
 
 st.set_page_config(
     page_title="Machine Learning-Driven Soil Analysis for Sustainable Agriculture System",
@@ -1073,7 +1173,138 @@ elif page == "📊 Visualization":
         if "Nitrogen" in df.columns and "Fertility_Level" not in df.columns:
             df["Fertility_Level"] = create_fertility_label(
                 df, col="Nitrogen", q=3
-            )
+            )        
+        # ===== NEW: Folium classification map (RF) — dots only, strict Mindanao land-safe bounds, with legend =====
+        st.subheader("🗺️ Soil Health Classification Map (Random Forest)")
+        st.caption("Legend: 🟢 High • 🟠 Moderate • 🔴 Poor. Uses your trained Random Forest predictions.")
+
+
+        if "Latitude" in df.columns and "Longitude" in df.columns:
+            model = st.session_state.get("model")
+            scaler = st.session_state.get("scaler")
+            trained_features = st.session_state.get("trained_on_features")
+            results = st.session_state.get("results")
+
+            if (
+                model is not None
+                and scaler is not None
+                and trained_features is not None
+                and all(f in df.columns for f in trained_features)
+            ):
+                try:
+                    # Predict for all rows
+                    X_all = df[trained_features]
+                    X_scaled_all = scaler.transform(X_all)
+                    preds = model.predict(X_scaled_all)
+
+                    # Determine task
+                    task = None
+                    if results and isinstance(results, dict) and "task" in results:
+                        task = results["task"]
+                    else:
+                        task = st.session_state.get("task_mode", "Classification")
+
+                    df_rf = df.copy()
+                    df_rf["RF_Prediction"] = preds
+
+                    # Convert predictions to Sustainability classes
+                    if str(task).lower().startswith("class"):
+                        def _to_sustainability(v):
+                            s = str(v).strip().lower()
+                            if s in {"high"}:
+                                return "High"
+                            if s in {"moderate", "medium"}:
+                                return "Moderate"
+                            if s in {"poor", "low"}:
+                                return "Poor"
+                            # fallback: keep original if it matches
+                            return str(v)
+
+                        df_rf["Sustainability"] = df_rf["RF_Prediction"].apply(_to_sustainability)
+                    else:
+                        # Regression → bucket into Poor/Moderate/High using terciles
+                        p = pd.to_numeric(df_rf["RF_Prediction"], errors="coerce")
+                        q1, q2 = p.quantile([0.33, 0.66]).values
+                        def _bucket(val):
+                            if pd.isna(val):
+                                return np.nan
+                            if val <= q1:
+                                return "Poor"
+                            if val <= q2:
+                                return "Moderate"
+                            return "High"
+                        df_rf["Sustainability"] = p.apply(_bucket)
+
+                    # Filter to Mindanao land-safe bounds (hides offshore/outside points)
+                    df_map = _filter_mindanao_land_only(df_rf).dropna(subset=["Sustainability"])
+
+                    if not df_map.empty:
+                        center_lat = float(df_map["Latitude"].mean())
+                        center_lon = float(df_map["Longitude"].mean())
+
+                        m = folium.Map(
+                            location=[center_lat, center_lon],
+                            zoom_start=7,
+                            tiles="CartoDB dark_matter",
+                            control_scale=True,
+                        )
+
+                        # Lock map bounds to filtered data extent
+                        min_lat, max_lat = float(df_map["Latitude"].min()), float(df_map["Latitude"].max())
+                        min_lon, max_lon = float(df_map["Longitude"].min()), float(df_map["Longitude"].max())
+                        m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
+                        m.options["maxBounds"] = [[min_lat, min_lon], [max_lat, max_lon]]
+
+                        color_map = {"High": "#2ecc71", "Moderate": "#f39c12", "Poor": "#e74c3c"}
+
+                        for _, r in df_map.iterrows():
+                            cls = str(r["Sustainability"]).strip().title()
+                            if cls not in color_map:
+                                # Any unknown labels default to Moderate color
+                                cls = "Moderate"
+                            folium.CircleMarker(
+                                location=[float(r["Latitude"]), float(r["Longitude"])],
+                                radius=4,
+                                color=color_map[cls],
+                                fill=True,
+                                fill_color=color_map[cls],
+                                fill_opacity=0.85,
+                                weight=0,
+                            ).add_to(m)
+
+                        # Legend (bottom-left)
+                        legend_html = '''
+                        <div style="
+                            position: fixed;
+                            bottom: 30px;
+                            left: 30px;
+                            z-index: 9999;
+                            background: rgba(0,0,0,0.65);
+                            padding: 12px 14px;
+                            border-radius: 10px;
+                            color: white;
+                            font-size: 14px;
+                            line-height: 18px;
+                            ">
+                            <div style="font-weight:700; margin-bottom:6px;">Soil Health (Sustainability)</div>
+                            <div><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#2ecc71;margin-right:8px;"></span>High</div>
+                            <div><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#f39c12;margin-right:8px;"></span>Moderate</div>
+                            <div><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#e74c3c;margin-right:8px;"></span>Poor</div>
+                        </div>
+                        '''
+                        m.get_root().html.add_child(folium.Element(legend_html))
+
+                        st_folium(m, width=1024, height=520)
+                    else:
+                        st.info("No valid Mindanao land points to display after filtering coordinates.")
+                except Exception as e:
+                    st.warning(f"Unable to generate the Folium map from Random Forest predictions: {e}")
+            else:
+                st.info("To enable this map, train a model first in the '🤖 Modeling' page.")
+        else:
+            st.info("Latitude and Longitude columns are required to generate the Folium map.")
+        # ===== END NEW Folium hotspot section =====
+
 
         st.subheader("Parameter Overview (Levels & Distributions)")
         param_cols = [
@@ -1112,112 +1343,62 @@ elif page == "📊 Visualization":
         st.subheader("Correlation Matrix")
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         if numeric_cols:
-            corr = df[numeric_cols].corr()
-            corr = corr.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-            fig_corr = px.imshow(
-                corr,
-                text_auto=".2f",
-                color_continuous_scale=px.colors.sequential.Viridis,
-                title="Correlation Heatmap",
+            # Pick a reasonable default subset so the heatmap stays readable
+            exclude_like = {"latitude", "lat", "longitude", "lon", "lng", "long", "longitude_2"}
+            default_cols = [c for c in numeric_cols if c.strip().lower() not in exclude_like][:12]
+            selected_cols = st.multiselect(
+                "Select numeric columns to include (fewer columns = clearer heatmap)",
+                options=numeric_cols,
+                default=default_cols if len(default_cols) >= 2 else numeric_cols[: min(12, len(numeric_cols))],
             )
-            fig_corr.update_traces(
-                texttemplate="%{z:.2f}",
-                textfont=dict(color="white", size=10),
-            )
-            fig_corr.update_layout(template="plotly_dark")
-            st.plotly_chart(fig_corr, use_container_width=True)
+
+            if selected_cols is None or len(selected_cols) < 2:
+                st.info("Select at least 2 numeric columns to view the correlation matrix.")
+            else:
+                show_values = st.checkbox(
+                    "Show correlation values on cells (can get cluttered with many columns)",
+                    value=False,
+                )
+
+                corr = df[selected_cols].corr()
+                corr = corr.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+                fig_corr = px.imshow(
+                    corr,
+                    color_continuous_scale=px.colors.sequential.Viridis,
+                    zmin=-1,
+                    zmax=1,
+                    aspect="auto",
+                    title="Correlation Heatmap",
+                )
+
+                # Improve readability
+                fig_corr.update_layout(
+                    template="plotly_dark",
+                    height=650,
+                    margin=dict(l=40, r=40, t=70, b=40),
+                )
+                fig_corr.update_xaxes(tickangle=45, tickfont=dict(size=12))
+                fig_corr.update_yaxes(tickfont=dict(size=12))
+
+                # Only overlay numbers when requested AND not too many columns
+                if show_values and len(selected_cols) <= 15:
+                    txt = corr.round(2).astype(str).values
+                    fig_corr.update_traces(
+                        text=txt,
+                        texttemplate="%{text}",
+                        textfont=dict(color="white", size=10),
+                    )
+                else:
+                    fig_corr.update_traces(text=None)
+
+                st.plotly_chart(fig_corr, use_container_width=True)
         else:
             st.info("No numeric columns available for correlation matrix.")
         st.markdown("---")
 
-        # === Location map using Latitude/Longitude/Province, auto-focused on data in PH ===
-        if "Latitude" in df.columns and "Longitude" in df.columns:
-            st.subheader("🗺️ Location map of soil samples (auto-zoom on PH data)")
-            loc_df = df.dropna(subset=["Latitude", "Longitude"]).copy()
-            if not loc_df.empty:
-                # Basic sanity filter: keep only plausible PH lat/lon
-                loc_df = loc_df[
-                    (loc_df["Latitude"].between(4, 22))
-                    & (loc_df["Longitude"].between(116, 127))
-                ]
+        # === Location map using Latitude/Longitude/Province, auto-focused on data in PH === paste here
 
-                if loc_df.empty:
-                    st.info(
-                        "No latitude/longitude values fall inside Philippines bounds (4–22 N, 116–127 E)."
-                    )
-                else:
-                    prov_col = (
-                        "Province"
-                        if "Province" in loc_df.columns
-                        else ("province" if "province" in loc_df.columns else None)
-                    )
-
-                    color_col = None
-                    if "Fertility_Level" in loc_df.columns:
-                        color_col = "Fertility_Level"
-                    elif prov_col is not None:
-                        color_col = prov_col
-
-                    hover_cols = []
-                    if prov_col and prov_col in loc_df.columns:
-                        hover_cols.append(prov_col)
-                    for col in ["soil_type"]:
-                        if col in loc_df.columns and col not in hover_cols:
-                            hover_cols.append(col)
-                    for col in [
-                        "pH",
-                        "Nitrogen",
-                        "Phosphorus",
-                        "Potassium",
-                        "Moisture",
-                        "Organic Matter",
-                    ]:
-                        if col in loc_df.columns and col not in hover_cols:
-                            hover_cols.append(col)
-
-                    lat_min = float(loc_df["Latitude"].min())
-                    lat_max = float(loc_df["Latitude"].max())
-                    lon_min = float(loc_df["Longitude"].min())
-                    lon_max = float(loc_df["Longitude"].max())
-                    lat_center = (lat_min + lat_max) / 2.0
-                    lon_center = (lon_min + lon_max) / 2.0
-
-                    if color_col:
-                        fig_geo = px.scatter_geo(
-                            loc_df,
-                            lat="Latitude",
-                            lon="Longitude",
-                            color=color_col,
-                            hover_name=prov_col if prov_col else None,
-                            hover_data=hover_cols,
-                            title="Soil sample locations by fertility/province (Philippines)",
-                        )
-                    else:
-                        fig_geo = px.scatter_geo(
-                            loc_df,
-                            lat="Latitude",
-                            lon="Longitude",
-                            hover_data=hover_cols,
-                            title="Soil sample locations (Philippines)",
-                        )
-
-                    fig_geo.update_geos(
-                        scope="asia",
-                        center=dict(lat=lat_center, lon=lon_center),
-                        lataxis_range=[lat_min - 0.5, lat_max + 0.5],
-                        lonaxis_range=[lon_min - 0.5, lon_max + 0.5],
-                        showcoastlines=True,
-                        showcountries=True,
-                        countrycolor="white",
-                        coastlinecolor="white",
-                        projection_type="mercator",
-                    )
-                    fig_geo.update_layout(template="plotly_dark", height=500)
-                    st.plotly_chart(fig_geo, use_container_width=True)
-            else:
-                st.info(
-                    "Latitude/Longitude present but all rows are NaN; map cannot be drawn."
-                )
 
 elif page == "📈 Results":
     st.title("📈 Model Results & Interpretation")
@@ -1301,6 +1482,31 @@ elif page == "📈 Results":
                         [c for c in cols_order if c in rep_df.columns]
                     ]
                     st.dataframe(rep_df[cols_order], use_container_width=True)
+                    # --- NEW: Classification metrics chart (per-class) ---
+                    try:
+                        plot_df = rep_df.copy()
+                        plot_df["Class"] = plot_df["Class"].astype(str)
+                        plot_df = plot_df[~plot_df["Class"].isin(["accuracy", "macro avg", "weighted avg"])]
+                        metric_cols = [c for c in ["precision", "recall", "f1-score"] if c in plot_df.columns]
+                        if len(plot_df) > 0 and len(metric_cols) > 0:
+                            long_df = plot_df[["Class"] + metric_cols].melt(
+                                id_vars="Class", var_name="Metric", value_name="Score"
+                            )
+                            fig_rep = px.bar(
+                                long_df,
+                                x="Class",
+                                y="Score",
+                                color="Metric",
+                                barmode="group",
+                                title="Classification Metrics by Class",
+                            )
+                            fig_rep.update_yaxes(range=[0, 1])
+                            fig_rep.update_layout(xaxis_title="", yaxis_title="Score (0–1)")
+                            st.plotly_chart(fig_rep, use_container_width=True)
+                    except Exception:
+                        pass
+                    # --- END NEW ---
+
                 except Exception:
                     st.text(classification_report(y_test, y_pred))
             else:
@@ -1861,3 +2067,4 @@ elif page == "👤 About":
         unsafe_allow_html=True,
     )
     st.write("Developed for a capstone project.")
+
